@@ -1,0 +1,61 @@
+opensandbox-controller:
+  controller:
+    image:
+      repository: asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/controller
+    snapshot:
+      imageCommitterImage: asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/image-committer:release-1.2.0
+opensandbox-server:
+  server:
+    image:
+      repository: asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/server
+    resources:
+      requests: {cpu: 250m, memory: 512Mi}
+      limits: {cpu: "1", memory: 2Gi}
+    service:
+      type: ClusterIP
+    env:
+      - name: OPENSANDBOX_SERVER_API_KEY
+        valueFrom:
+          secretKeyRef: {name: opensandbox-api-key, key: api-key}
+    gateway:
+      enabled: true
+      host: "127.0.0.1:18081"
+      gatewayRouteMode: header
+  configToml: |
+    [server]
+    host = "0.0.0.0"
+    port = 80
+    api_key = ""
+
+    [log]
+    level = "INFO"
+
+    [runtime]
+    type = "kubernetes"
+    execd_image = "asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/execd:release-1.2.0"
+
+    [kubernetes]
+    kubeconfig_path = ""
+    namespace = "opensandbox"
+    informer_resync_seconds = 300
+    informer_watch_timeout_seconds = 60
+    workload_provider = "batchsandbox"
+    batchsandbox_template_file = "/etc/opensandbox/example.batchsandbox-template.yaml"
+
+    [egress]
+    image = "asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/egress:release-1.2.0"
+    mode = "dns+nft"
+    requests = { cpu = "25m", memory = "64Mi" }
+    limits = { cpu = "250m", memory = "256Mi" }
+ingress-gateway:
+  enabled: true
+  gateway:
+    image:
+      repository: asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/ingress
+    replicaCount: 1
+    gatewayRouteMode: header
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: "1", memory: 1Gi}
+    service:
+      type: ClusterIP
