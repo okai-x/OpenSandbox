@@ -1,0 +1,129 @@
+# OpenSandbox business metrics on the GKE deployment.
+#
+#   server / controller / gateway --OTLP/HTTP--> otel-collector --/metrics--> Managed Prometheus
+#   controller-runtime /metrics ---------------------------------------------> Managed Prometheus
+#
+# Managed Prometheus (enabled on the cluster) scrapes both through PodMonitoring,
+# so the collector needs no GCP credentials. Grafana in one-platform reads the
+# result with PromQL against project pranalab-infra.
+#
+#   kubectl apply -f deploy/gke/observability.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector
+  namespace: opensandbox-system
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+      # Go components default to delta temporality; Prometheus needs cumulative.
+      delta_to_cumulative: {}
+      batch: {}
+    exporters:
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        # The controller stops sending a gauge series once its count drops to
+        # zero; expire it after ~3 missed 30s exports instead of the 5m default.
+        metric_expiration: 90s
+        # Keep service.name/namespace as labels so panels can split by component.
+        resource_to_telemetry_conversion:
+          enabled: true
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    service:
+      extensions: [health_check]
+      pipelines:
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, delta_to_cumulative, batch]
+          exporters: [prometheus]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: opensandbox-system
+  labels:
+    app.kubernetes.io/name: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-collector
+    spec:
+      containers:
+        - name: collector
+          image: asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/opentelemetry-collector-contrib:0.162.0
+          args: ["--config=/conf/config.yaml"]
+          ports:
+            - {name: otlp-http, containerPort: 4318}
+            - {name: prom, containerPort: 8889}
+            - {name: health, containerPort: 13133}
+          readinessProbe:
+            httpGet: {path: /, port: health}
+          livenessProbe:
+            httpGet: {path: /, port: health}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: conf, mountPath: /conf}
+      volumes:
+        - name: conf
+          configMap: {name: otel-collector}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: opensandbox-system
+spec:
+  selector:
+    app.kubernetes.io/name: otel-collector
+  ports:
+    - {name: otlp-http, port: 4318, targetPort: otlp-http}
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: otel-collector
+  namespace: opensandbox-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  endpoints:
+    - port: prom
+      interval: 30s
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: opensandbox-controller
+  namespace: opensandbox-system
+spec:
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  endpoints:
+    - port: metrics
+      interval: 30s

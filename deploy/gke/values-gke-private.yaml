@@ -4,6 +4,17 @@ opensandbox-controller:
       repository: asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/controller
     snapshot:
       imageCommitterImage: asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/image-committer:release-1.2.0
+    # controller-runtime /metrics, scraped by the PodMonitoring in observability.yaml.
+    metrics:
+      enabled: true
+      secure: false
+  # Business metrics (BatchSandbox counts, allocator latency) go over OTLP to
+  # the collector in observability.yaml.
+  extraEnv:
+    - name: OTEL_EXPORTER_OTLP_ENDPOINT
+      value: http://otel-collector.opensandbox-system.svc.cluster.local:4318
+    - name: OTEL_METRIC_EXPORT_INTERVAL
+      value: "30000"
 opensandbox-server:
   server:
     image:
@@ -52,6 +63,11 @@ opensandbox-server:
     mode = "dns+nft"
     requests = { cpu = "25m", memory = "64Mi" }
     limits = { cpu = "250m", memory = "256Mi" }
+
+    [otel]
+    enabled = true
+    endpoint = "http://otel-collector.opensandbox-system.svc.cluster.local:4318/v1/metrics"
+    export_interval_millis = 30000
 ingress-gateway:
   enabled: true
   gateway:
@@ -59,6 +75,9 @@ ingress-gateway:
       repository: asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/ingress
     replicaCount: 2
     gatewayRouteMode: header
+    env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://otel-collector.opensandbox-system.svc.cluster.local:4318
     resources:
       requests: {cpu: 100m, memory: 128Mi}
       limits: {cpu: "1", memory: 1Gi}
