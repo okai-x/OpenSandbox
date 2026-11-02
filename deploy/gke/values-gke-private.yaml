@@ -19,7 +19,10 @@ opensandbox-server:
           secretKeyRef: {name: opensandbox-api-key, key: api-key}
     gateway:
       enabled: true
-      host: "127.0.0.1:18081"
+      # Clients (the data-synthesis orchestrator) run in this cluster and reach
+      # sandboxes through the gateway Service. Out-of-cluster tools use the
+      # server proxy (SDK use_server_proxy=True) instead.
+      host: "opensandbox-ingress-gateway.opensandbox-system.svc.cluster.local:80"
       gatewayRouteMode: header
   configToml: |
     [server]
@@ -54,7 +57,7 @@ ingress-gateway:
   gateway:
     image:
       repository: asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/ingress
-    replicaCount: 1
+    replicaCount: 2
     gatewayRouteMode: header
     resources:
       requests: {cpu: 100m, memory: 128Mi}

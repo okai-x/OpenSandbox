@@ -1,0 +1,31 @@
+# In-cluster regression run: reaches sandboxes through the ingress gateway,
+# exactly like the in-cluster data-synthesis orchestrator. Started by
+# `deploy/gke/regress.sh --in-cluster`; image from build-regress-image.sh.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: opensandbox-regress
+  namespace: opensandbox-system
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: regress
+          image: asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/regress:latest
+          imagePullPolicy: Always
+          env:
+            - name: OPENSANDBOX_TEST_DOMAIN
+              value: opensandbox-server.opensandbox-system.svc.cluster.local:80
+            - name: OPENSANDBOX_TEST_API_KEY
+              valueFrom:
+                secretKeyRef: {name: opensandbox-api-key, key: api-key}
+            - name: OPENSANDBOX_SANDBOX_DEFAULT_IMAGE
+              value: asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/code-interpreter:v1.1.0
+            - name: REGRESS_SERVER_PROXY
+              value: "false"
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}

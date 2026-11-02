@@ -1,7 +1,10 @@
 """Regression checks for the self-hosted OpenSandbox deployment on GKE.
 
-Run through regress.sh, which sets up port-forwards and exports:
+Run through regress.sh (from a workstation, via port-forward and the server
+proxy) or as the in-cluster Job in regress-job.yaml (via the gateway, the same
+path the in-cluster orchestrator uses). Environment:
   OPENSANDBOX_TEST_DOMAIN   lifecycle server, e.g. 127.0.0.1:18080
+  REGRESS_SERVER_PROXY      "true" to route sandbox traffic through the server
   OPENSANDBOX_TEST_API_KEY  server API key
   OPENSANDBOX_SANDBOX_DEFAULT_IMAGE  sandbox image in Artifact Registry
   REGRESS_CONCURRENCY       sandboxes created in parallel (default 2)
@@ -37,6 +40,7 @@ ARTIFACT_BUCKET = os.getenv(
 )
 # Any bucket the sandbox must NOT reach.
 OTHER_BUCKET = os.getenv("REGRESS_OTHER_BUCKET", "pranalab-infra-ops-backup")
+SERVER_PROXY = os.getenv("REGRESS_SERVER_PROXY", "false").lower() == "true"
 UPLOADER = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "sandbox_gcs_upload.py"
 )
@@ -45,6 +49,7 @@ config = ConnectionConfigSync(
     domain=DOMAIN,
     protocol="http",
     api_key=API_KEY,
+    use_server_proxy=SERVER_PROXY,
     # Create blocks server-side up to sandbox_create_timeout_seconds (300).
     request_timeout=timedelta(seconds=360),
 )
@@ -117,7 +122,7 @@ def check_create(holder):
     return holder["sb"].id
 
 
-@check("run command through gateway")
+@check("run command in sandbox")
 def check_command(sb):
     out = stdout(sb.commands.run("echo hello && uname -m"))
     assert out.startswith("hello"), repr(out)
@@ -279,7 +284,10 @@ def check_concurrency():
 
 
 def main() -> int:
-    print(f"run id: {RUN_ID}  server: {DOMAIN}  image: {IMAGE}\n", flush=True)
+    path = "server proxy" if SERVER_PROXY else "gateway"
+    print(
+        f"run id: {RUN_ID}  server: {DOMAIN}  via: {path}  image: {IMAGE}\n", flush=True
+    )
     check_health()
     check_auth()
     holder: dict = {}
