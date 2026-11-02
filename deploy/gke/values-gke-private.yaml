@@ -39,6 +39,8 @@ opensandbox-server:
     namespace = "opensandbox"
     informer_resync_seconds = 300
     informer_watch_timeout_seconds = 60
+    # First pull of the ~2.6GB code-interpreter image on a fresh node exceeds the 60s default.
+    sandbox_create_timeout_seconds = 300
     workload_provider = "batchsandbox"
     batchsandbox_template_file = "/etc/opensandbox/example.batchsandbox-template.yaml"
 
