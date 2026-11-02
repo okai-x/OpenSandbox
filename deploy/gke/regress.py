@@ -5,6 +5,8 @@ Run through regress.sh, which sets up port-forwards and exports:
   OPENSANDBOX_TEST_API_KEY  server API key
   OPENSANDBOX_SANDBOX_DEFAULT_IMAGE  sandbox image in Artifact Registry
   REGRESS_CONCURRENCY       sandboxes created in parallel (default 2)
+  REGRESS_ARTIFACT_BUCKET   bucket the sandbox KSA may write
+  REGRESS_OTHER_BUCKET      bucket the sandbox must not reach
 
 Each check prints PASS/FAIL; the process exits non-zero if any check fails.
 """
@@ -30,6 +32,14 @@ IMAGE = os.environ["OPENSANDBOX_SANDBOX_DEFAULT_IMAGE"]
 CONCURRENCY = int(os.getenv("REGRESS_CONCURRENCY", "2"))
 RUN_ID = f"regress-{uuid.uuid4().hex[:8]}"
 RESOURCE = {"cpu": "500m", "memory": "1Gi"}
+ARTIFACT_BUCKET = os.getenv(
+    "REGRESS_ARTIFACT_BUCKET", "pranalab-infra-opensandbox-artifacts"
+)
+# Any bucket the sandbox must NOT reach.
+OTHER_BUCKET = os.getenv("REGRESS_OTHER_BUCKET", "pranalab-infra-ops-backup")
+UPLOADER = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "sandbox_gcs_upload.py"
+)
 
 config = ConnectionConfigSync(
     domain=DOMAIN,
@@ -155,12 +165,11 @@ def check_no_internet(sb):
     assert out == "blocked", f"internet is {out}"
 
 
-@check("sandbox has no usable GCP credentials")
-def check_no_gcp_token(sb):
-    # With Workload Identity (GKE_METADATA) the metadata server no longer
-    # exposes the node service account: it hands the sandbox a federated token
-    # for its own KSA, which has no IAM grants. Fail if the identity is a GCP
-    # service account, or if the token can read the image repo the node SA can.
+@check("GCP access limited to the artifacts bucket")
+def check_gcp_scope(sb):
+    # Workload Identity gives the sandbox KSA (opensandbox/default) a federated
+    # token, granted objectAdmin on the artifacts bucket only. The node service
+    # account must stay hidden, and nothing beyond that bucket may be reachable.
     script = (
         "import json, urllib.request, urllib.error\n"
         "md = {'Metadata-Flavor': 'Google'}\n"
@@ -174,22 +183,52 @@ def check_no_gcp_token(sb):
         "    except Exception as e:\n"
         "        return type(e).__name__, ''\n"
         "_, email = get(base + 'email', md)\n"
-        "s, body = get(base + 'token', md)\n"
-        "ar = 'none'\n"
-        "if s == 200:\n"
-        "    tok = json.loads(body)['access_token']\n"
-        "    ar = get('https://artifactregistry.googleapis.com/v1/projects/pranalab-infra/'\n"
-        "             'locations/asia-southeast1/repositories/opensandbox/packages',\n"
-        "             {'Authorization': 'Bearer ' + tok})[0]\n"
-        "print(json.dumps({'email': email, 'ar': ar}))\n"
+        "tok = json.loads(get(base + 'token', md)[1])['access_token']\n"
+        "h = {'Authorization': 'Bearer ' + tok}\n"
+        "ar = get('https://artifactregistry.googleapis.com/v1/projects/pranalab-infra/'\n"
+        "         'locations/asia-southeast1/repositories/opensandbox/packages', h)[0]\n"
+        f"other = get('https://storage.googleapis.com/storage/v1/b/{OTHER_BUCKET}/o', h)[0]\n"
+        f"own = get('https://storage.googleapis.com/storage/v1/b/{ARTIFACT_BUCKET}/o?maxResults=1', h)[0]\n"
+        "print(json.dumps({'email': email, 'ar': ar, 'other': other, 'own': own}))\n"
     )
-    sb.files.write_file("/tmp/token.py", script)
-    out = json.loads(stdout(sb.commands.run("python3 /tmp/token.py")).strip())
+    sb.files.write_file("/tmp/scope.py", script)
+    out = json.loads(stdout(sb.commands.run("python3 /tmp/scope.py")).strip())
     assert not out["email"].endswith("gserviceaccount.com"), (
         f"identity is {out['email']}"
     )
-    assert out["ar"] != 200, "token can read Artifact Registry"
-    return f"identity={out['email'] or '-'} AR={out['ar']}"
+    assert out["ar"] == 403, f"Artifact Registry -> {out['ar']}"
+    assert out["other"] == 403, f"{OTHER_BUCKET} -> {out['other']}"
+    assert out["own"] == 200, f"{ARTIFACT_BUCKET} -> {out['own']}"
+    return f"AR={out['ar']} other-bucket={out['other']} artifacts-bucket={out['own']}"
+
+
+@check("parallel upload to the artifacts bucket")
+def check_gcs_upload(sb):
+    with open(UPLOADER) as f:
+        sb.files.write_file("/tmp/sandbox_gcs_upload.py", f.read())
+    name = f"regress/{RUN_ID}.bin"
+    out = stdout(
+        sb.commands.run(
+            "head -c 300M /dev/urandom > /tmp/up.bin && python3 /tmp/sandbox_gcs_upload.py "
+            f"/tmp/up.bin gs://{ARTIFACT_BUCKET}/{name} --parts 4"
+        )
+    ).strip()
+    result = json.loads(out.splitlines()[-1])
+    assert result["size"] == 300 << 20 and result["parts"] == 4, result
+    # Clean up from inside the sandbox; this also proves delete permission.
+    cleanup = (
+        "import json, urllib.request, urllib.parse\n"
+        "md = {'Metadata-Flavor': 'Google'}\n"
+        "tok = json.load(urllib.request.urlopen(urllib.request.Request(\n"
+        "    'http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token', headers=md)))['access_token']\n"
+        f"url = 'https://storage.googleapis.com/storage/v1/b/{ARTIFACT_BUCKET}/o/' + urllib.parse.quote('{name}', safe='')\n"
+        "req = urllib.request.Request(url, method='DELETE', headers={'Authorization': 'Bearer ' + tok})\n"
+        "print(urllib.request.urlopen(req).status)\n"
+    )
+    sb.files.write_file("/tmp/cleanup.py", cleanup)
+    status = stdout(sb.commands.run("python3 /tmp/cleanup.py")).strip()
+    assert status == "204", f"delete -> {status}"
+    return f"{result['mib_per_s']} MiB/s"
 
 
 @check("list/get via manager")
@@ -254,7 +293,8 @@ def main() -> int:
                 check_files,
                 check_python,
                 check_no_internet,
-                check_no_gcp_token,
+                check_gcp_scope,
+                check_gcs_upload,
                 check_manager,
                 check_renew,
             ):
