@@ -28,6 +28,16 @@ opensandbox-server:
       - name: OPENSANDBOX_SERVER_API_KEY
         valueFrom:
           secretKeyRef: {name: opensandbox-api-key, key: api-key}
+    # BatchSandbox template from sandbox-template.yaml (pins sandboxes to the
+    # sandbox node pool).
+    volumes:
+      - name: sandbox-template
+        configMap:
+          name: opensandbox-sandbox-template
+    volumeMounts:
+      - name: sandbox-template
+        mountPath: /etc/opensandbox/templates
+        readOnly: true
     gateway:
       enabled: true
       # Clients (the data-synthesis orchestrator) run in this cluster and reach
@@ -56,7 +66,7 @@ opensandbox-server:
     # First pull of the ~2.6GB code-interpreter image on a fresh node exceeds the 60s default.
     sandbox_create_timeout_seconds = 300
     workload_provider = "batchsandbox"
-    batchsandbox_template_file = "/etc/opensandbox/example.batchsandbox-template.yaml"
+    batchsandbox_template_file = "/etc/opensandbox/templates/batchsandbox-template.yaml"
 
     [egress]
     image = "asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/egress:release-1.2.0"

@@ -1,0 +1,29 @@
+# BatchSandbox template for the GKE deployment, replacing the example baked
+# into the server image. The server mounts it (see values-gke-private.yaml).
+#
+# Sandboxes are pinned to the sandbox-c3d60 node pool. That pool carries the
+# taint opensandbox.io/pool=sandbox:NoSchedule to keep system pods off its
+# autoscaled nodes; the nodeSelector keeps small sandboxes off default-pool,
+# where they would compete with the server and controller.
+#
+#   kubectl apply -f deploy/gke/sandbox-template.yaml
+#
+# The server reads the template at startup, so restart it after a change:
+#
+#   kubectl -n opensandbox-system rollout restart deploy/opensandbox-server
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opensandbox-sandbox-template
+  namespace: opensandbox-system
+data:
+  batchsandbox-template.yaml: |
+    spec:
+      replicas: 1
+      template:
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            opensandbox.io/pool: sandbox
+          tolerations:
+            - operator: "Exists"
