@@ -86,7 +86,7 @@ gcloud storage buckets add-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
 echo "objectAdmin granted to $SB_NS/default"
 
 log "credentials ($CTX)"
-gcloud container clusters get-credentials "$CLUSTER" --location "$LOCATION" "${G[@]}" >/dev/null 2>&1
+gcloud container clusters get-credentials "$CLUSTER" --location "$LOCATION" "${G[@]}" --dns-endpoint >/dev/null 2>&1
 
 log "namespaces and API key"
 # The chart owns the system namespace, so it carries Helm's ownership marks
