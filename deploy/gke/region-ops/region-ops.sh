@@ -174,14 +174,10 @@ count_listed() {
   fi
 }
 
-delete_region() {
-  (($# == 2)) || reject "delete-region takes location cluster"
+# delete_cluster deletes an OpenSandbox cluster once it runs no sandboxes or jobs.
+delete_cluster() {
   local location=$1 cluster=$2
-  name location "$location"; name cluster "$cluster"
-  local region
-  region=$(region_of "$location") || reject "location '$location' is not a region or zone"
   opensandbox_cluster "$location" "$cluster"
-
   step "check that $cluster runs no sandboxes or jobs"
   credentials "$location" "$cluster" || reject "cannot reach $cluster to check it is empty"
   local sandboxes jobs
@@ -191,6 +187,23 @@ delete_region() {
 
   step "delete cluster $cluster"
   gcloud container clusters delete "$cluster" --location "$location" --project "$PROJECT" --quiet
+}
+
+delete_region() {
+  (($# == 2)) || reject "delete-region takes location cluster"
+  local location=$1 cluster=$2
+  name location "$location"; name cluster "$cluster"
+  local region found
+  region=$(region_of "$location") || reject "location '$location' is not a region or zone"
+
+  # A create that failed before the cluster existed leaves only its region to clean up.
+  found=$(gcloud container clusters list --project "$PROJECT" --format='value(name,location)') ||
+    reject "cannot look up cluster $cluster in $location"
+  if grep -qxF "$cluster"$'\t'"$location" <<<"$found"; then
+    delete_cluster "$location" "$cluster"
+  else
+    echo "cluster $cluster in $location does not exist"
+  fi
 
   if [[ $region == "$SOURCE_REGION" ]]; then
     echo "keeping the $SOURCE_REGION image repository: every region copies from it"
