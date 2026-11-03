@@ -7,8 +7,8 @@ The standard orchestrator of One Platform's sandbox Git jobs. One Platform runs 
 1. Reads `$OP_JOB_DIR/spec.json` and `inputs.jsonl` and writes them to `gs://$OP_ARTIFACTS_BUCKET/jobs/<job>/`.
 2. Downloads `source.repo` at `source.commit` from GitHub with `OP_GITHUB_TOKEN`, keeps only `source.path` and writes it as `jobs/<job>/source.tar.gz`.
 3. Runs one sandbox per task `(index, sample)`, at most `concurrency` at a time, labeled `one-platform.io/job=<job>`. A slot is reused only after the previous sandbox is gone.
-4. In each sandbox: unpacks the source into `/op/src`, writes the item to `/op/input.json`, and runs `command` detached in `/op/src` with `variables`, the job's Secrets and the `OP_*` variables in its environment. After `timeoutMinutes` the command is interrupted and the task is a `timeout`.
-5. From inside the sandbox, uploads `stdout.log`, `stderr.log` and `/op/output/` to `jobs/<job>/tasks/<index>/<sample>/attempt-<n>/` with `sandbox_gcs_upload.py`, then checks `result.json`; a missing or invalid one makes the task a `task_error`.
+4. In each sandbox: unpacks the source into `/tmp/op/src`, writes the item to `/tmp/op/input.json`, and runs `command` detached in `/tmp/op/src` with `variables`, the job's Secrets and the `OP_*` variables in its environment. After `timeoutMinutes` the command is interrupted and the task is a `timeout`.
+5. From inside the sandbox, uploads `stdout.log`, `stderr.log` and `/tmp/op/output/` to `jobs/<job>/tasks/<index>/<sample>/attempt-<n>/` with `sandbox_gcs_upload.py`, then checks `result.json`; a missing or invalid one makes the task a `task_error`.
 6. A failed sandbox create or a sandbox that stops answering is an `infra` failure and is tried again in a new `attempt-<n>` directory, up to 3 attempts.
 7. Stops starting tasks once the reported `usage.costUsd` reaches `budgetUsd`; running tasks finish.
 8. Rewrites `jobs/<job>/summary.json` every 10 s and at the end.
@@ -26,13 +26,13 @@ Secret values only reach the orchestrator's environment and the command's enviro
 | `OPEN_SANDBOX_DOMAIN` | the OpenSandbox server, e.g. `opensandbox-server.opensandbox-system.svc.cluster.local:80` |
 | `OPEN_SANDBOX_API_KEY` | Secret `opensandbox-api-key`, key `value` |
 | `OP_GITHUB_TOKEN` | Secret `github-read-token`, key `value` |
-| `OP_SECRET_<NAME>` | for each entry `<NAME>: <secret>` of the spec's `secrets`, Secret `<secret>`, key `value`; the command sees it as `<NAME>` |
+| `OP_SECRET_<NAME>` | for each entry `<NAME>: <secret>` of the spec's `secrets`, Secret `<secret>`, key `value`; the command sees it as `<NAME>`. One Platform accepts only Secrets named `task-…`, so a job cannot hand the orchestrator's own Secrets to its tasks |
 
 The Pod runs as KSA `sandbox-orchestrator` in `opensandbox-jobs`, which Workload Identity maps to a principal with `roles/storage.objectAdmin` on the artifacts bucket (`bootstrap-region.sh`). Sandboxes upload with their own KSA, `opensandbox/default`.
 
 ## Task images
 
-The orchestrator runs `mkdir`, `tar` and `python3` (3.10 or later) in the task image, and the command's user must be able to create `/op`.
+The orchestrator runs `mkdir`, `tar` and `python3` (3.10 or later) in the task image, and everything a task gets is under `/tmp/op`, which any user can create.
 
 ## Tests
 

@@ -261,8 +261,8 @@ class Orchestrator:
             "OP_ITEM_ID": task.item_id,
             "OP_ITEM_INDEX": str(task.index),
             "OP_SAMPLE_INDEX": str(task.sample),
-            "OP_INPUT": "/op/input.json",
-            "OP_OUTPUT_DIR": "/op/output",
+            "OP_INPUT": "/tmp/op/input.json",
+            "OP_OUTPUT_DIR": "/tmp/op/output",
         }
 
     # Stopping and summary -------------------------------------------------

@@ -99,14 +99,14 @@ class FakeSandboxes:
             return sb
 
     def write(self, sb, path, data):
-        if path == "/op/input.json":
+        if path == "/tmp/op/input.json":
             sb.behavior = json.loads(data).get("behavior", {})
 
     def exec(self, sb, command):
         if sb.deleted:
             raise RuntimeError("sandbox gone")
         b = sb.behavior
-        if not command.startswith("python3 /op/collect.py"):
+        if not command.startswith("python3 /tmp/op/collect.py"):
             return b.get("setup_exit", 0), ""
         if b.get("collect_raises"):
             raise RuntimeError("sandbox gone")
@@ -168,7 +168,7 @@ def make_spec(**over):
         "sandbox": {"cpu": 8, "memoryGiB": 12, "timeoutMinutes": 1},
         "command": ["bash", "run_task.sh", "--flag", "a b"],
         "variables": {"WORKER_MODEL": "m1"},
-        "secrets": {"CODEX_API_KEY": "codex-gateway-key"},
+        "secrets": {"CODEX_API_KEY": "task-codex-gateway-key"},
         "inputs": {"idField": "item_name"},
         "samplesPerItem": 1,
         "concurrency": 2,
@@ -415,8 +415,8 @@ class RunTest(Harness):
         envs = self.sandboxes.created[0].envs
         self.assertEqual(envs["CODEX_API_KEY"], SECRET)
         self.assertEqual(envs["WORKER_MODEL"], "m1")
-        self.assertEqual(envs["OP_INPUT"], "/op/input.json")
-        self.assertEqual(envs["OP_OUTPUT_DIR"], "/op/output")
+        self.assertEqual(envs["OP_INPUT"], "/tmp/op/input.json")
+        self.assertEqual(envs["OP_OUTPUT_DIR"], "/tmp/op/output")
         task_envs = sorted(
             (
                 sb.envs["OP_TASK_ID"],
@@ -467,11 +467,11 @@ class RunTest(Harness):
     def test_command_line_quotes_arguments(self):
         line = attempt.command_line(["bash", "run_task.sh", "a b", "$HOME"])
         self.assertTrue(
-            line.endswith("cd /op/src && exec bash run_task.sh 'a b' '$HOME'"), line
+            line.endswith("cd /tmp/op/src && exec bash run_task.sh 'a b' '$HOME'"), line
         )
 
     def test_collect_script_uploads_logs_and_output(self):
-        """Runs the in-sandbox script with /op remapped and a copying uploader."""
+        """Runs the in-sandbox script with /tmp/op remapped and a copying uploader."""
         import subprocess
         import sys
 
@@ -495,7 +495,7 @@ class RunTest(Harness):
                 "os.makedirs(os.path.dirname(dst), exist_ok=True)\n"
                 "shutil.copy(sys.argv[1], dst)\n"
             )
-        script = attempt.COLLECT.replace("/op/", op + "/")
+        script = attempt.COLLECT.replace("/tmp/op/", op + "/")
         out = subprocess.run(
             [sys.executable, "-c", script, "gs://b/jobs/j/tasks/0/0/attempt-1"],
             capture_output=True,
@@ -655,7 +655,7 @@ class RunTest(Harness):
         self.assertEqual(self.sandboxes.created, [])
         self.assertEqual(
             self.termination_message(),
-            "secret CODEX_API_KEY is not set (Secret codex-gateway-key, key value)",
+            "secret CODEX_API_KEY is not set (Secret task-codex-gateway-key, key value)",
         )
 
     def test_download_failure_fails_the_job(self):

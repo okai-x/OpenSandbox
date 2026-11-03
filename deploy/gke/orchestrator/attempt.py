@@ -1,7 +1,7 @@
 """One attempt of a task inside a created sandbox.
 
 The command runs detached and is polled, so a multi-hour task does not depend
-on one long-lived stream. Logs and /op/output are uploaded from inside the
+on one long-lived stream. Logs and /tmp/op/output are uploaded from inside the
 sandbox with sandbox_gcs_upload.py (the sandbox KSA can write the artifacts
 bucket); the orchestrator itself only reads back result.json.
 """
@@ -24,15 +24,15 @@ COLLECT = f"""\
 import json, os, subprocess, sys
 dest = sys.argv[1]
 def up(path, name):
-    subprocess.run([sys.executable, "/op/upload.py", path, dest + "/" + name], check=True)
+    subprocess.run([sys.executable, "/tmp/op/upload.py", path, dest + "/" + name], check=True)
 for log in ("stdout.log", "stderr.log"):
-    up("/op/logs/" + log, log)
-for root, _, files in os.walk("/op/output"):
+    up("/tmp/op/logs/" + log, log)
+for root, _, files in os.walk("/tmp/op/output"):
     for f in sorted(files):
         path = os.path.join(root, f)
         if os.path.isfile(path):
-            up(path, "output/" + os.path.relpath(path, "/op/output"))
-res, out = "/op/output/result.json", {{"size": -1, "text": None}}
+            up(path, "output/" + os.path.relpath(path, "/tmp/op/output"))
+res, out = "/tmp/op/output/result.json", {{"size": -1, "text": None}}
 if os.path.isfile(res):
     out["size"] = os.path.getsize(res)
     if out["size"] <= {MAX_RESULT}:
@@ -90,7 +90,7 @@ def run(
         )
     try:
         code, stdout = sandboxes.exec(
-            sb, f"python3 /op/collect.py gs://{ctx.bucket}/{prefix}"
+            sb, f"python3 /tmp/op/collect.py gs://{ctx.bucket}/{prefix}"
         )
     except Exception as e:  # noqa: BLE001
         if timed_out:  # never run a timed-out task again
@@ -106,13 +106,13 @@ def run(
 
 
 def prepare(sandboxes, sb, ctx: Context, item: dict) -> None:
-    check(sandboxes.exec(sb, "mkdir -p /op/src /op/output /op/logs"), "create /op")
-    sandboxes.write(sb, "/op/src.tar.gz", ctx.source)
-    sandboxes.write(sb, "/op/input.json", json.dumps(item))
-    sandboxes.write(sb, "/op/upload.py", ctx.uploader)
-    sandboxes.write(sb, "/op/collect.py", COLLECT)
+    check(sandboxes.exec(sb, "mkdir -p /tmp/op/src /tmp/op/output /tmp/op/logs"), "create /tmp/op")
+    sandboxes.write(sb, "/tmp/op/src.tar.gz", ctx.source)
+    sandboxes.write(sb, "/tmp/op/input.json", json.dumps(item))
+    sandboxes.write(sb, "/tmp/op/upload.py", ctx.uploader)
+    sandboxes.write(sb, "/tmp/op/collect.py", COLLECT)
     check(
-        sandboxes.exec(sb, "tar -xzf /op/src.tar.gz -C /op/src && rm /op/src.tar.gz"),
+        sandboxes.exec(sb, "tar -xzf /tmp/op/src.tar.gz -C /tmp/op/src && rm /tmp/op/src.tar.gz"),
         "unpack source",
     )
 
@@ -123,7 +123,7 @@ def check(res: tuple, step: str) -> None:
 
 
 def command_line(command: list[str]) -> str:
-    return f"exec >/op/logs/stdout.log 2>/op/logs/stderr.log </dev/null; cd /op/src && exec {shlex.join(command)}"
+    return f"exec >/tmp/op/logs/stdout.log 2>/tmp/op/logs/stderr.log </dev/null; cd /tmp/op/src && exec {shlex.join(command)}"
 
 
 def wait(sandboxes, sb, ctx: Context, execution: str, stop: threading.Event) -> tuple:

@@ -128,7 +128,7 @@ EOF
 # by this script, and a missing one fails the job at start:
 #   opensandbox-api-key  the server API key (same value as opensandbox-system/opensandbox-api-key, key api-key)
 #   github-read-token    read-only GitHub token for the PranaLabs repositories
-#   <model key name>     each Secret a job's spec.json names under "secrets"
+#   task-<model key>     each Secret a job's spec.json names under "secrets"; One Platform accepts only task- names, so no job can name the two above
 # e.g. kubectl -n opensandbox-jobs create secret generic github-read-token --from-file=value=/dev/stdin
 for secret in opensandbox-api-key github-read-token; do
   "${KC[@]}" -n "$JOBS_NS" get secret "$secret" >/dev/null 2>&1 \
