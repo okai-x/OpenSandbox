@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from records import validate_result, verdict
 
 MAX_RESULT = 64 << 10
+# How much of stderr's end a missing or invalid result's detail quotes; the
+# detail itself is cut at 500 characters by validate_result's contract.
+STDERR_TAIL = 300
 
 # Uploads the attempt's logs and output, then prints result.json (if any) as
 # the last stdout line. Runs with the image's python3. Each upload prints a
@@ -32,7 +35,11 @@ for root, _, files in os.walk("/tmp/op/output"):
         path = os.path.join(root, f)
         if os.path.isfile(path):
             up(path, "output/" + os.path.relpath(path, "/tmp/op/output"))
-res, out = "/tmp/op/output/result.json", {{"size": -1, "text": None}}
+res, out = "/tmp/op/output/result.json", {{"size": -1, "text": None, "stderrTail": ""}}
+with open("/tmp/op/logs/stderr.log", "rb") as f:
+    f.seek(max(os.path.getsize("/tmp/op/logs/stderr.log") - 4096, 0))
+    lines = [l for l in f.read().decode("utf-8", "replace").splitlines() if l.strip()]
+out["stderrTail"] = " | ".join(lines[-3:])[-{STDERR_TAIL}:]
 if os.path.isfile(res):
     out["size"] = os.path.getsize(res)
     if out["size"] <= {MAX_RESULT}:
@@ -100,7 +107,7 @@ def run(
         # Not retried: the command already ran, and running it again costs as much.
         out.setdefault("result", verdict("infra", f"upload output: exit {code}"))
         return out
-    result, out["usage"] = judge(last_line(stdout))
+    result, out["usage"] = judge(last_line(stdout), exit_code)
     out.setdefault("result", result)
     return out
 
@@ -155,17 +162,24 @@ def interrupt(sandboxes, sb, execution: str):
         return None
 
 
-def judge(out: dict) -> tuple[dict, dict]:
+def judge(out: dict, exit_code=None) -> tuple[dict, dict]:
+    """The task's result; when the task gave none, why, with its exit code
+    and the end of its stderr, so the cause shows without opening the logs."""
     if out.get("size", -1) < 0:
-        return verdict("task_error", "result.json is missing"), {}
+        return verdict("task_error", why("result.json is missing", out, exit_code)), {}
     if out.get("text") is None:
-        return verdict(
-            "task_error", f"result.json is larger than {MAX_RESULT} bytes"
-        ), {}
+        reason = f"result.json is larger than {MAX_RESULT} bytes"
+        return verdict("task_error", why(reason, out, exit_code)), {}
     try:
         return validate_result(json.loads(out["text"]))
     except (TypeError, ValueError) as e:  # json.JSONDecodeError is a ValueError
-        return verdict("task_error", f"result.json is invalid: {e}"), {}
+        return verdict("task_error", why(f"result.json is invalid: {e}", out, exit_code)), {}
+
+
+def why(reason: str, out: dict, exit_code) -> str:
+    detail = reason if exit_code is None else f"{reason}; exit {exit_code}"
+    tail = out.get("stderrTail") or ""
+    return f"{detail}; stderr: {tail}"[:500] if tail else detail
 
 
 def last_line(stdout: str) -> dict:

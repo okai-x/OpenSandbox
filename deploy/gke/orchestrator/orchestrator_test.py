@@ -481,7 +481,7 @@ class RunTest(Harness):
             os.makedirs(os.path.join(op, d))
         files = {
             "logs/stdout.log": "out",
-            "logs/stderr.log": "",
+            "logs/stderr.log": "warming up\n\nTraceback (most recent call last):\nValueError: no item\n",
             "output/meshes/a.glb": "mesh",
             "output/result.json": '{"version": 1}',
         }
@@ -502,7 +502,11 @@ class RunTest(Harness):
             text=True,
             check=True,
         ).stdout
-        self.assertEqual(attempt.last_line(out), {"size": 14, "text": '{"version": 1}'})
+        self.assertEqual(
+            attempt.last_line(out),
+            {"size": 14, "text": '{"version": 1}',
+             "stderrTail": "warming up | Traceback (most recent call last): | ValueError: no item"},
+        )
         uploaded = []
         for root, _, names in os.walk(store):
             uploaded += [os.path.relpath(os.path.join(root, n), store) for n in names]
@@ -519,6 +523,17 @@ class RunTest(Harness):
                 )
             ],
         )
+
+    def test_missing_result_quotes_exit_code_and_stderr(self):
+        tail = "python3: can't open file '/tmp/op/src/one-platform/run_task.py': [Errno 2] No such file or directory"
+        result, usage = attempt.judge({"size": -1, "text": None, "stderrTail": tail}, 2)
+        self.assertEqual(result["class"], "task_error")
+        self.assertEqual(result["detail"], "result.json is missing; exit 2; stderr: " + tail)
+        self.assertEqual(usage, {})
+        result, _ = attempt.judge({"size": -1, "text": None, "stderrTail": "x" * 900}, 1)
+        self.assertEqual(len(result["detail"]), 500)
+        result, _ = attempt.judge({"size": -1, "text": None, "stderrTail": ""}, None)
+        self.assertEqual(result["detail"], "result.json is missing")
 
     def test_concurrency_limits_live_sandboxes(self):
         items = [{"item_name": f"i{n}", "behavior": {"polls": 4}} for n in range(10)]
