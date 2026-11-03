@@ -59,6 +59,30 @@ zones() {
     --format='value(zone)' | sort | paste -sd, -
 }
 
+# probe_capacity reserves one VM of the type in the first of the zones with
+# room for it, then releases it. A zone that has run out fails the reservation,
+# which costs nothing; one that has room is billed for the seconds it is held.
+# It rejects the request when no zone has room, before anything is changed.
+probe_capacity() {
+  local where=$1 type=$2 zones=$3 zone out probe="sandbox-probe-$SANDBOX_OP_ID"
+  step "check that $where has $type capacity now"
+  for zone in ${zones//,/ }; do
+    if out=$(gcloud compute reservations create "$probe" --zone "$zone" --project "$PROJECT" \
+      --machine-type "$type" --vm-count 1 --require-specific-reservation --quiet 2>&1); then
+      gcloud compute reservations delete "$probe" --zone "$zone" --project "$PROJECT" --quiet ||
+        { echo "delete reservation $probe in $zone by hand: it is billed while it exists" >&2; exit 1; }
+      echo "$zone has room for $type"
+      return
+    fi
+    if [[ $out != *RESOURCE_POOL_EXHAUSTED* && $out != *"does not have enough resources"* ]]; then
+      echo "$out" >&2
+      reject "cannot reserve $type in $zone to check its capacity"
+    fi
+    echo "$zone has no $type capacity now"
+  done
+  reject "no zone of $where has $type capacity now; try another machine type or region"
+}
+
 opensandbox_cluster() {
   local label
   label=$(gcloud container clusters describe "$2" --location "$1" --project "$PROJECT" \
@@ -135,6 +159,7 @@ create_region() {
   system_zones=$(zones "$region-" e2-standard-4 | cut -d, -f1-2)
   [[ -n $system_zones ]] || reject "no zone of $region offers e2-standard-4 for the system pool"
   echo "sandbox zones $sandbox_zones; system zones $system_zones"
+  probe_capacity "$region" "$type" "$sandbox_zones"
 
   local env=/tmp/$region.env
   cat >"$env" <<EOF
@@ -234,6 +259,7 @@ change_machine_type() {
   if gcloud container node-pools describe "$new" --cluster "$cluster" --location "$location" --project "$PROJECT" >/dev/null 2>&1; then
     step "node pool $new exists"
   else
+    probe_capacity "$location" "$type" "$new_zones"
     step "create node pool $new ($type) in $new_zones"
     # shellcheck disable=SC2086 # the flags are words without spaces
     gcloud container node-pools create "$new" --cluster "$cluster" --location "$location" --project "$PROJECT" \
