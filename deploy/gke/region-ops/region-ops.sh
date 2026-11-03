@@ -10,6 +10,11 @@
 #   region-ops.sh create-region <region> <machineType> <minNodes> <maxNodes>
 #   region-ops.sh delete-region <location> <cluster>
 #   region-ops.sh change-machine-type <location> <cluster> <nodePool> <machineType> <minNodes> <maxNodes>
+#   region-ops.sh prepare-jobs <location> <cluster> <artifactsBucket>
+#
+# create-region ends with what prepare-jobs does (bootstrap-region.sh runs
+# prepare-jobs.sh), so a region it builds can run sandbox Git jobs; prepare-jobs
+# brings an existing region to that point, or copies changed Secrets to it.
 #
 # Every action can run again after a failure: what already exists is kept.
 # SANDBOX_OP_ID names the One Platform operation, so its logs and execution can
@@ -184,6 +189,36 @@ EOF
   "$DEPLOY/bootstrap-region.sh" "$env"
 }
 
+# prepare_jobs copies the images to a region and makes it able to run sandbox
+# Git jobs (prepare-jobs.sh). The bucket must be the region's own.
+prepare_jobs() {
+  (($# == 3)) || reject "prepare-jobs takes location cluster artifactsBucket"
+  local location=$1 cluster=$2 bucket=$3
+  name location "$location"; name cluster "$cluster"
+  local region own=$PROJECT-opensandbox-artifacts
+  region=$(region_of "$location") || reject "location '$location' is not a region or zone"
+  [[ $region == "$SOURCE_REGION" ]] || own=$own-$region
+  [[ $bucket == "$own" ]] || reject "bucket '$bucket' is not the artifacts bucket of $region"
+
+  step "check that $cluster is an OpenSandbox cluster"
+  opensandbox_cluster "$location" "$cluster"
+  credentials "$location" "$cluster" || reject "cannot reach $cluster"
+
+  local env=/tmp/$cluster.env
+  cat >"$env" <<EOF
+PROJECT=$PROJECT
+REGION=$region
+LOCATION=$location
+CLUSTER=$cluster
+ARTIFACTS_BUCKET=$bucket
+REGISTRY=$region-docker.pkg.dev/$PROJECT/opensandbox
+EOF
+  step "copy images to $region"
+  "$DEPLOY/sync-images.sh" "$env"
+  step "prepare $cluster for sandbox Git jobs"
+  "$DEPLOY/prepare-jobs.sh" "$env"
+}
+
 # count_listed counts the objects kubectl lists. A cluster that never got as
 # far as installing OpenSandbox has no such resource type, which counts as
 # none; any other failure is an error, never a zero.
@@ -315,6 +350,7 @@ case $action in
   create-region) create_region "$@" ;;
   delete-region) delete_region "$@" ;;
   change-machine-type) change_machine_type "$@" ;;
+  prepare-jobs) prepare_jobs "$@" ;;
   *) reject "unknown action '$action'" ;;
 esac
 step "done"
