@@ -7,8 +7,9 @@
 # Identity, Managed Prometheus, DNS endpoint), one tainted sandbox node pool,
 # the region's artifacts bucket and its IAM binding, a region-local copy of the
 # images (sync-images.sh), then installs the Helm release, the metrics
-# collector and the sandbox template. Re-running it is safe; it upgrades the
-# Helm release and re-applies the manifests.
+# collector, the sandbox template and One Platform's read access
+# (one-platform-rbac.yaml). Re-running it is safe; it upgrades the Helm release
+# and re-applies the manifests.
 #
 # values-gke-private.yaml and observability.yaml name the asia-southeast1
 # repository; they are applied with it replaced by the region's REGISTRY.
@@ -110,6 +111,7 @@ log "images ($REGISTRY)"
 log "sandbox template and metrics collector"
 "${KC[@]}" apply -f "$ROOT/deploy/gke/sandbox-template.yaml" >/dev/null
 regional observability.yaml | "${KC[@]}" apply -f - >/dev/null
+"${KC[@]}" apply -f "$ROOT/deploy/gke/one-platform-rbac.yaml" >/dev/null
 echo "applied"
 
 log "Helm release opensandbox"
