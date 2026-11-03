@@ -1,6 +1,9 @@
-# Read access for One Platform, which shows each region's sandbox capacity:
+# Access for One Platform, which shows each region's sandbox capacity:
 # Ready sandbox nodes and their allocatable resources, and the sandbox pods
-# (by the one-platform.io/job label) that use them. The server reaches the
+# (by the one-platform.io/job label) that use them. It also runs sandbox Git
+# jobs: an orchestrator Job and its ConfigMap in namespace opensandbox-jobs
+# (created by bootstrap-region.sh), and after the job the deletion of its
+# leftover BatchSandboxes by the same label. The server reaches the
 # cluster through its DNS endpoint as the service account
 # one-platform-sandbox@pranalab-infra, whose token it mints with
 # iamcredentials (roles/iam.serviceAccountTokenCreator for the server's
@@ -50,6 +53,63 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: one-platform-sandbox-observer
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: one-platform-sandbox@pranalab-infra.iam.gserviceaccount.com
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: one-platform-sandbox-jobs
+  namespace: opensandbox-jobs
+rules:
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, delete]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create, get, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: one-platform-sandbox-jobs
+  namespace: opensandbox-jobs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: one-platform-sandbox-jobs
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: one-platform-sandbox@pranalab-infra.iam.gserviceaccount.com
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: one-platform-sandbox-jobs
+  namespace: opensandbox
+rules:
+  - apiGroups: [sandbox.opensandbox.io]
+    resources: [batchsandboxes]
+    verbs: [list, deletecollection]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: one-platform-sandbox-jobs
+  namespace: opensandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: one-platform-sandbox-jobs
 subjects:
   - apiGroup: rbac.authorization.k8s.io
     kind: User

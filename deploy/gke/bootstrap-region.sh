@@ -7,9 +7,10 @@
 # Identity, Managed Prometheus, DNS endpoint), one tainted sandbox node pool,
 # the region's artifacts bucket and its IAM binding, a region-local copy of the
 # images (sync-images.sh), then installs the Helm release, the metrics
-# collector, the sandbox template and One Platform's read access
-# (one-platform-rbac.yaml). Re-running it is safe; it upgrades the Helm release
-# and re-applies the manifests.
+# collector, the sandbox template and One Platform's access
+# (one-platform-rbac.yaml), including namespace opensandbox-jobs where One
+# Platform runs sandbox Git job orchestrators (orchestrator/). Re-running it is
+# safe; it upgrades the Helm release and re-applies the manifests.
 #
 # values-gke-private.yaml and observability.yaml name the asia-southeast1
 # repository; they are applied with it replaced by the region's REGISTRY.
@@ -26,6 +27,11 @@ SB_NS=opensandbox
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
 # Sandboxes run as the default KSA of the sandbox namespace.
 SANDBOX_PRINCIPAL="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT.svc.id.goog/subject/ns/$SB_NS/sa/default"
+# Sandbox Git job orchestrators run as KSA sandbox-orchestrator in their own namespace
+# and write the job's records to the artifacts bucket.
+JOBS_NS=opensandbox-jobs
+ORCHESTRATOR_KSA=sandbox-orchestrator
+ORCHESTRATOR_PRINCIPAL="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT.svc.id.goog/subject/ns/$JOBS_NS/sa/$ORCHESTRATOR_KSA"
 G=(--project "$PROJECT")
 KC=(kubectl --context "$CTX")
 SOURCE_REGISTRY=asia-southeast1-docker.pkg.dev/$PROJECT/opensandbox
@@ -84,6 +90,9 @@ fi
 gcloud storage buckets add-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
   --member "$SANDBOX_PRINCIPAL" --role roles/storage.objectAdmin >/dev/null
 echo "objectAdmin granted to $SB_NS/default"
+gcloud storage buckets add-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
+  --member "$ORCHESTRATOR_PRINCIPAL" --role roles/storage.objectAdmin >/dev/null
+echo "objectAdmin granted to $JOBS_NS/$ORCHESTRATOR_KSA"
 
 log "credentials ($CTX)"
 gcloud container clusters get-credentials "$CLUSTER" --location "$LOCATION" "${G[@]}" --dns-endpoint >/dev/null 2>&1
@@ -104,6 +113,27 @@ else
     --from-literal=api-key="$(openssl rand -hex 24)" >/dev/null
   echo "API key created"
 fi
+# One Platform creates orchestrator Jobs here; one-platform-rbac.yaml grants it
+# access to this namespace, so it must exist before that file is applied.
+"${KC[@]}" create namespace "$JOBS_NS" --dry-run=client -o yaml | "${KC[@]}" apply -f - >/dev/null
+"${KC[@]}" apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: $ORCHESTRATOR_KSA
+  namespace: $JOBS_NS
+automountServiceAccountToken: false
+EOF
+# Orchestrators read these Secrets (key value); they are created by hand, never
+# by this script, and a missing one fails the job at start:
+#   opensandbox-api-key  the server API key (same value as opensandbox-system/opensandbox-api-key, key api-key)
+#   github-read-token    read-only GitHub token for the PranaLabs repositories
+#   <model key name>     each Secret a job's spec.json names under "secrets"
+# e.g. kubectl -n opensandbox-jobs create secret generic github-read-token --from-file=value=/dev/stdin
+for secret in opensandbox-api-key github-read-token; do
+  "${KC[@]}" -n "$JOBS_NS" get secret "$secret" >/dev/null 2>&1 \
+    || echo "missing Secret $JOBS_NS/$secret (key value): sandbox Git jobs fail until it is created"
+done
 
 log "images ($REGISTRY)"
 "$ROOT/deploy/gke/sync-images.sh" "$1"
