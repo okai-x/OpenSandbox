@@ -11,7 +11,8 @@
 # in-cluster orchestrator; build its image with build-regress-image.sh.
 #
 # Env overrides: KUBE_CONTEXT, SERVER_PORT (18080), SANDBOX_IMAGE,
-# REGRESS_CONCURRENCY (2), REGRESS_VERBOSE.
+# REGRESS_CONCURRENCY (2), REGRESS_VERBOSE, and for another region its
+# REGISTRY and REGRESS_ARTIFACT_BUCKET (see deploy/gke/regions/).
 set -euo pipefail
 
 MODE=local
@@ -28,7 +29,8 @@ CTX="${KUBE_CONTEXT:-gke_pranalab-infra_asia-southeast1-b_opensandbox}"
 SYS_NS=opensandbox-system
 SB_NS=opensandbox
 SERVER_PORT="${SERVER_PORT:-18080}"
-IMAGE="${SANDBOX_IMAGE:-asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/code-interpreter:v1.1.0}"
+REGISTRY="${REGISTRY:-asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox}"
+IMAGE="${SANDBOX_IMAGE:-$REGISTRY/code-interpreter:v1.1.0}"
 KC=(kubectl --context "$CTX")
 PF_PIDS=()
 
@@ -75,7 +77,13 @@ STATUS=0
 if [[ $MODE == in-cluster ]]; then
   log "in-cluster Job (via gateway)"
   "${KC[@]}" -n "$SYS_NS" delete job opensandbox-regress --ignore-not-found >/dev/null
-  "${KC[@]}" apply -f "$ROOT/deploy/gke/regress-job.yaml" >/dev/null
+  # regress-job.yaml names the asia-southeast1 repository; point it at REGISTRY.
+  # REGRESS_ARTIFACT_BUCKET is not in the file, so set env always emits it.
+  sed "s#asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox#$REGISTRY#g" \
+      "$ROOT/deploy/gke/regress-job.yaml" \
+    | "${KC[@]}" set env --local -f - -o yaml \
+        REGRESS_ARTIFACT_BUCKET="${REGRESS_ARTIFACT_BUCKET:-pranalab-infra-opensandbox-artifacts}" \
+    | "${KC[@]}" apply -f - >/dev/null
   # Wait for the pod to start, then stream its output until the Job ends.
   "${KC[@]}" -n "$SYS_NS" wait --for=condition=Ready pod -l job-name=opensandbox-regress --timeout=180s >/dev/null 2>&1 || true
   "${KC[@]}" -n "$SYS_NS" logs -f job/opensandbox-regress || true

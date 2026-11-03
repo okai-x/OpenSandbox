@@ -5,14 +5,17 @@
 #   deploy/gke/loadtest.sh --concurrency 14 --total 28 --burn-seconds 120
 #
 # All arguments go to loadtest.py (see its --help). Sandbox nodes scale up as
-# needed: 7 sandboxes of 8 CPU / 12Gi fit on one c3d-highcpu-60 node. Build the
-# image first with build-regress-image.sh.
+# needed: 7 sandboxes of 8 CPU / 12Gi fit on one c3d-highcpu-60 node, 11 on an
+# n4d-highcpu-96. Build the image first with build-regress-image.sh. For
+# another region set KUBE_CONTEXT, REGISTRY and REGRESS_ARTIFACT_BUCKET
+# (deploy/gke/regions/).
 set -euo pipefail
 
 CTX="${KUBE_CONTEXT:-gke_pranalab-infra_asia-southeast1-b_opensandbox}"
 NS=opensandbox-system
 JOB=opensandbox-loadtest
-IMAGE="${REGRESS_IMAGE:-asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox/regress:latest}"
+REGISTRY="${REGISTRY:-asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox}"
+IMAGE="${REGRESS_IMAGE:-$REGISTRY/regress:latest}"
 KC=(kubectl --context "$CTX" -n "$NS")
 
 ARGS_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@")
@@ -43,6 +46,10 @@ spec:
             - name: OPENSANDBOX_TEST_API_KEY
               valueFrom:
                 secretKeyRef: {name: opensandbox-api-key, key: api-key}
+            - name: REGRESS_ARTIFACT_BUCKET
+              value: ${REGRESS_ARTIFACT_BUCKET:-pranalab-infra-opensandbox-artifacts}
+            - name: OPENSANDBOX_SANDBOX_DEFAULT_IMAGE
+              value: $REGISTRY/code-interpreter:v1.1.0
           resources:
             requests: {cpu: 250m, memory: 256Mi}
             limits: {cpu: "1", memory: 1Gi}
