@@ -29,7 +29,10 @@ CTX="gke_${PROJECT}_${LOCATION}_${CLUSTER}"
 SYS_NS=opensandbox-system
 JOBS_NS=opensandbox-jobs
 ORCHESTRATOR_KSA=sandbox-orchestrator
-PLATFORM_SA=one-platform-sandbox@$PROJECT.iam.gserviceaccount.com
+# One Platform's account and the Secrets every other region copies are in the
+# primary project, whatever the cluster's PROJECT.
+PRIMARY_PROJECT=pranalab-infra
+PLATFORM_SA=one-platform-sandbox@$PRIMARY_PROJECT.iam.gserviceaccount.com
 # The region that holds the Secrets every other region copies.
 SOURCE_LOCATION=asia-southeast1-b
 SOURCE_CLUSTER=opensandbox
@@ -98,14 +101,14 @@ echo "reader granted to $PLATFORM_SA"
 log "Secrets of $JOBS_NS"
 "${KC[@]}" -n "$SYS_NS" get secret opensandbox-api-key -o json | as_secret opensandbox-api-key api-key | put_secret
 echo "opensandbox-api-key set from $SYS_NS"
-if [[ $LOCATION == "$SOURCE_LOCATION" && $CLUSTER == "$SOURCE_CLUSTER" ]]; then
+if [[ $PROJECT == "$PRIMARY_PROJECT" && $LOCATION == "$SOURCE_LOCATION" && $CLUSTER == "$SOURCE_CLUSTER" ]]; then
   echo "this region holds the copied Secrets"
 else
   SOURCE_KC=$(mktemp)
   trap 'rm -f "$SOURCE_KC"' EXIT
   KUBECONFIG=$SOURCE_KC gcloud container clusters get-credentials "$SOURCE_CLUSTER" --location "$SOURCE_LOCATION" \
-    "${G[@]}" --dns-endpoint >/dev/null 2>&1 || { echo "cannot reach $SOURCE_CLUSTER to copy its Secrets" >&2; exit 1; }
-  SRC=(kubectl --kubeconfig "$SOURCE_KC" --context "gke_${PROJECT}_${SOURCE_LOCATION}_${SOURCE_CLUSTER}")
+    --project "$PRIMARY_PROJECT" --dns-endpoint >/dev/null 2>&1 || { echo "cannot reach $SOURCE_CLUSTER to copy its Secrets" >&2; exit 1; }
+  SRC=(kubectl --kubeconfig "$SOURCE_KC" --context "gke_${PRIMARY_PROJECT}_${SOURCE_LOCATION}_${SOURCE_CLUSTER}")
   wanted=$(copied_secrets "${SRC[@]}")
   grep -qx github-read-token <<<"$wanted" || { echo "$SOURCE_CLUSTER has no Secret $JOBS_NS/github-read-token" >&2; exit 1; }
   for secret in $wanted; do

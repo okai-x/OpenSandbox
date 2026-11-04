@@ -5,9 +5,9 @@
 #   deploy/gke/install-region.sh deploy/gke/regions/asia-south1.env
 #
 # The cluster must already exist. One Platform's cluster-ops Job creates it
-# (one-platform deploy/cluster-ops/cluster-ops.sh create-cluster opensandbox
-# <region> <machineType> <minNodes> <maxNodes>): a private cluster labeled
-# app=opensandbox (Workload Identity, Managed Prometheus, DNS endpoint) with
+# (one-platform deploy/cluster-ops/cluster-ops.sh create-cluster <project>
+# opensandbox <region> <machineType> <minNodes> <maxNodes>): a private cluster
+# labeled app=opensandbox (Workload Identity, Managed Prometheus, DNS endpoint) with
 # one sandbox node pool labeled and tainted opensandbox.io/pool=sandbox
 # (NoSchedule), which the sandbox template selects and tolerates.
 #
@@ -19,8 +19,10 @@
 # (orchestrator/) need. Re-running it is safe; it upgrades the Helm release
 # and re-applies the manifests.
 #
-# values-gke-private.yaml and observability.yaml name the asia-southeast1
-# repository; they are applied with it replaced by the region's REGISTRY.
+# PROJECT is the cluster's project, which holds the bucket and the image copy.
+# values-gke-private.yaml and observability.yaml name the source repository,
+# the primary project's asia-southeast1 one; they are applied with it replaced
+# by the region's REGISTRY.
 set -euo pipefail
 
 [[ $# -eq 1 && -f $1 ]] || { echo "usage: $0 deploy/gke/regions/<region>.env" >&2; exit 2; }
@@ -36,7 +38,8 @@ PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumb
 SANDBOX_PRINCIPAL="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT.svc.id.goog/subject/ns/$SB_NS/sa/default"
 G=(--project "$PROJECT")
 KC=(kubectl --context "$CTX")
-SOURCE_REGISTRY=asia-southeast1-docker.pkg.dev/$PROJECT/opensandbox
+# Every region copies its images from here, whatever its project.
+SOURCE_REGISTRY=asia-southeast1-docker.pkg.dev/pranalab-infra/opensandbox
 
 log() { printf '\n== %s\n' "$*"; }
 # Print a deploy/gke file with image references pointed at the region's registry.

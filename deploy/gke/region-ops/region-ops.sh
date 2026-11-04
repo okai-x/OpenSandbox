@@ -4,11 +4,17 @@
 # can only run this image with arguments, so this script is the boundary: it
 # accepts a fixed set of actions, checks every argument against a strict
 # pattern or allow list, and touches only clusters labeled app=opensandbox in
-# this project.
+# the PROJECTS below.
 #
-#   region-ops.sh install-opensandbox <location> <cluster>
-#   region-ops.sh prepare-jobs <location> <cluster> <artifactsBucket>
-#   region-ops.sh remove-opensandbox <location> <cluster>
+#   region-ops.sh install-opensandbox <project> <location> <cluster>
+#   region-ops.sh prepare-jobs <project> <location> <cluster> <artifactsBucket>
+#   region-ops.sh remove-opensandbox <project> <location> <cluster>
+#
+# Every action works in the one project it names, which must be in PROJECTS:
+# the same list as One Platform's ONE_PLATFORM_CLUSTER_PROJECTS and its
+# cluster-ops.sh. A cluster's artifacts bucket and image copy live in the
+# cluster's project; the images and Secrets are still copied from the primary
+# project's asia-southeast1-b/opensandbox.
 #
 # The clusters and their node pools are One Platform's cluster-ops Job's
 # (one-platform deploy/cluster-ops/cluster-ops.sh): it creates, resizes and
@@ -23,9 +29,11 @@
 set -euo pipefail
 
 # Fixed here, not taken from the environment, which a caller can override.
-readonly PROJECT=pranalab-infra
+readonly PROJECTS=(pranalab-infra pranalab-harbor)
+readonly PRIMARY_PROJECT=pranalab-infra
 readonly SOURCE_REGION=asia-southeast1 # holds the image repository every region copies
-# The cluster that holds the Secrets and image repository other regions copy.
+# The cluster that holds the Secrets and image repository other regions copy,
+# in the primary project.
 readonly SOURCE_LOCATION=asia-southeast1-b
 readonly SOURCE_CLUSTER=opensandbox
 readonly DEPLOY=/opt/opensandbox/deploy/gke
@@ -33,11 +41,20 @@ readonly DEPLOY=/opt/opensandbox/deploy/gke
 reject() { echo "rejected: $*" >&2; exit 2; }
 step() { printf '== step: %s\n' "$*"; }
 
+known_project() {
+  local project
+  for project in "${PROJECTS[@]}"; do [[ $1 == "$project" ]] && return; done
+  return 1
+}
 name() { [[ $2 =~ ^[a-z][a-z0-9-]{0,62}$ ]] || reject "$1 '$2' is not a valid name"; }
 region_of() { [[ $1 =~ ^([a-z]+-[a-z]+[0-9]+)(-[a-z])?$ ]] && echo "${BASH_REMATCH[1]}"; }
-# artifacts_bucket prints the artifacts bucket of a region.
+# is_source_region tells whether a region of PROJECT holds the image
+# repository every other region copies.
+is_source_region() { [[ $PROJECT == "$PRIMARY_PROJECT" && $1 == "$SOURCE_REGION" ]]; }
+# artifacts_bucket prints the artifacts bucket of a region of PROJECT. The
+# source region's keeps the name it had before there were other regions.
 artifacts_bucket() {
-  if [[ $1 == "$SOURCE_REGION" ]]; then echo "$PROJECT-opensandbox-artifacts"; else echo "$PROJECT-opensandbox-artifacts-$1"; fi
+  if is_source_region "$1"; then echo "$PROJECT-opensandbox-artifacts"; else echo "$PROJECT-opensandbox-artifacts-$1"; fi
 }
 
 opensandbox_cluster() {
@@ -69,7 +86,7 @@ EOF
 # install_opensandbox installs OpenSandbox on a cluster cluster-ops built for
 # it (install-region.sh), ready to run sandbox Git jobs.
 install_opensandbox() {
-  (($# == 2)) || reject "install-opensandbox takes location cluster"
+  (($# == 2)) || reject "install-opensandbox takes project location cluster"
   local location=$1 cluster=$2
   name location "$location"; name cluster "$cluster"
   local region
@@ -85,14 +102,14 @@ install_opensandbox() {
 }
 
 # prepare_jobs copies the images to a region and makes it able to run sandbox
-# Git jobs (prepare-jobs.sh). The bucket must be the region's own.
+# Git jobs (prepare-jobs.sh). The bucket must be the region's own in PROJECT.
 prepare_jobs() {
-  (($# == 3)) || reject "prepare-jobs takes location cluster artifactsBucket"
+  (($# == 3)) || reject "prepare-jobs takes project location cluster artifactsBucket"
   local location=$1 cluster=$2 bucket=$3
   name location "$location"; name cluster "$cluster"
   local region
   region=$(region_of "$location") || reject "location '$location' is not a region or zone"
-  [[ $bucket == "$(artifacts_bucket "$region")" ]] || reject "bucket '$bucket' is not the artifacts bucket of $region"
+  [[ $bucket == "$(artifacts_bucket "$region")" ]] || reject "bucket '$bucket' is not the artifacts bucket of $region in $PROJECT"
 
   step "check that $cluster is an OpenSandbox cluster"
   opensandbox_cluster "$location" "$cluster"
@@ -125,12 +142,12 @@ count_listed() {
 # sandboxes or jobs, and deletes the region's image copy. The cluster and the
 # artifacts bucket are kept.
 remove_opensandbox() {
-  (($# == 2)) || reject "remove-opensandbox takes location cluster"
+  (($# == 2)) || reject "remove-opensandbox takes project location cluster"
   local location=$1 cluster=$2
   name location "$location"; name cluster "$cluster"
   local region
   region=$(region_of "$location") || reject "location '$location' is not a region or zone"
-  if [[ $location == "$SOURCE_LOCATION" && $cluster == "$SOURCE_CLUSTER" ]]; then
+  if [[ $PROJECT == "$PRIMARY_PROJECT" && $location == "$SOURCE_LOCATION" && $cluster == "$SOURCE_CLUSTER" ]]; then
     reject "$cluster holds the Secrets and images every other region copies"
   fi
 
@@ -151,7 +168,7 @@ remove_opensandbox() {
   step "delete namespaces opensandbox and opensandbox-jobs"
   kubectl delete namespace opensandbox opensandbox-jobs --ignore-not-found --wait --timeout 10m
 
-  if [[ $region == "$SOURCE_REGION" ]]; then
+  if is_source_region "$region"; then
     echo "keeping the $SOURCE_REGION image repository: every region copies from it"
   elif gcloud artifacts repositories describe opensandbox --location "$region" --project "$PROJECT" >/dev/null 2>&1; then
     step "delete the $region image repository"
@@ -163,11 +180,17 @@ remove_opensandbox() {
 [[ ${OPERATION_ID:-} =~ ^[a-z0-9-]{1,64}$ ]] || reject "OPERATION_ID is missing or malformed"
 echo "operation $OPERATION_ID: $*"
 action=${1:-}
-(($# > 0)) && shift
+case $action in
+  install-opensandbox | prepare-jobs | remove-opensandbox) ;;
+  *) reject "unknown action '$action'" ;;
+esac
+# The project comes right after the action; every gcloud call uses it.
+known_project "${2:-}" || reject "project '${2:-}' is not one of: ${PROJECTS[*]}"
+readonly PROJECT=$2
+shift 2
 case $action in
   install-opensandbox) install_opensandbox "$@" ;;
   prepare-jobs) prepare_jobs "$@" ;;
   remove-opensandbox) remove_opensandbox "$@" ;;
-  *) reject "unknown action '$action'" ;;
 esac
 step "done"

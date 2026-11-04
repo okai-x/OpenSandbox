@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Copy every tagged image from the asia-southeast1 Artifact Registry repository
-# (the source of truth) into a region's own repository:
+# Copy every tagged image from the primary project's asia-southeast1 Artifact
+# Registry repository (the source of truth) into a region's own repository,
+# which is created in the region's PROJECT when missing:
 #
 #   deploy/gke/sync-images.sh deploy/gke/regions/asia-south1.env
 #
@@ -20,7 +21,8 @@ set -euo pipefail
 # shellcheck source=/dev/null
 source "$1"
 
-SOURCE=asia-southeast1-docker.pkg.dev/$PROJECT/opensandbox
+SOURCE_PROJECT=pranalab-infra
+SOURCE=asia-southeast1-docker.pkg.dev/$SOURCE_PROJECT/opensandbox
 if [[ $REGISTRY == "$SOURCE" ]]; then
   echo "$REGION uses the source repository; nothing to copy"
   exit 0
@@ -47,7 +49,9 @@ gcloud artifacts repositories add-iam-policy-binding opensandbox --location "$RE
   --role roles/artifactregistry.reader >/dev/null
 gcloud artifacts repositories add-iam-policy-binding opensandbox --location "$REPO_LOCATION" --project "$PROJECT" \
   --member "$PRINCIPAL" --role roles/artifactregistry.writer >/dev/null
-gcloud artifacts repositories add-iam-policy-binding opensandbox --location asia-southeast1 --project "$PROJECT" \
+# The copy Job reads the source as the cluster's Workload Identity principal,
+# also when the cluster is in another project.
+gcloud artifacts repositories add-iam-policy-binding opensandbox --location asia-southeast1 --project "$SOURCE_PROJECT" \
   --member "$PRINCIPAL" --role roles/artifactregistry.reader >/dev/null
 
 "${KC[@]}" create serviceaccount "$KSA" --dry-run=client -o yaml | "${KC[@]}" apply -f - >/dev/null
