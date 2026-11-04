@@ -32,6 +32,26 @@ UPLOADER = os.path.join(
 )
 
 
+def sandbox_resources(size: dict) -> tuple[dict, dict]:
+    """A spec's sandbox size as OpenSandbox resourceLimits and
+    resourceRequests, in whole millicores and MiB as One Platform counts
+    them. cpu and memoryGiB are the limits; a request that is missing (specs
+    from before requests existed) or 0 equals its limit."""
+
+    def quantities(cpu, memory_gib) -> dict:
+        return {
+            "cpu": f"{round(cpu * 1000)}m",
+            "memory": f"{round(memory_gib * 1024)}Mi",
+        }
+
+    limits = quantities(size["cpu"], size["memoryGiB"])
+    requests = quantities(
+        size.get("cpuRequest") or size["cpu"],
+        size.get("memoryRequestGiB") or size["memoryGiB"],
+    )
+    return limits, requests
+
+
 class Fatal(Exception):
     """The orchestrator itself cannot continue."""
 
@@ -216,10 +236,10 @@ class Orchestrator:
         return self.record(task, prefix, run, out)
 
     def create_sandbox(self):
-        sandbox = self.spec["sandbox"]
+        limits, requests = sandbox_resources(self.spec["sandbox"])
         lifetime = self.ctx.timeout_s + self.settings.lifetime_margin_s
         return self.sandboxes.create(
-            self.spec["image"]["ref"], sandbox["cpu"], sandbox["memoryGiB"], lifetime
+            self.spec["image"]["ref"], limits, requests, lifetime
         )
 
     def record(self, task: Task, prefix: str, run: dict, out: dict) -> bool:

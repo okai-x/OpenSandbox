@@ -27,11 +27,16 @@ class Sandboxes:
     def config(self) -> ConnectionConfigSync:
         return ConnectionConfigSync(request_timeout=REQUEST_TIMEOUT)
 
-    def create(self, image: str, cpu, memory_gib, lifetime_s: float) -> SandboxSync:
+    def create(
+        self, image: str, limits: dict, requests: dict, lifetime_s: float
+    ) -> SandboxSync:
+        """Create a sandbox with Kubernetes resource limits and requests;
+        requests below the limits make it Burstable."""
         return SandboxSync.create(
             image,
             connection_config=self.config(),
-            resource={"cpu": f"{cpu:g}", "memory": f"{memory_gib:g}Gi"},
+            resource=limits,
+            resource_requests=requests,
             metadata={JOB_LABEL: self.job},
             timeout=timedelta(seconds=lifetime_s),
             ready_timeout=timedelta(minutes=6),
