@@ -5,8 +5,8 @@ spec, keep all its cores busy for a while, write an artifact, upload it to the
 artifacts bucket with sandbox_gcs_upload.py, delete the object and destroy the
 sandbox. --concurrency tasks run at once until --total have finished.
 
-Runs in-cluster through the gateway (loadtest-job.yaml, same path as the
-orchestrator) or from a workstation through the server proxy
+Runs in-cluster through the gateway (loadtest-job.yaml, same path as Harbor
+runners) or from a workstation through the server proxy
 (REGRESS_SERVER_PROXY=true with a port-forward to the server).
 
 Environment: OPENSANDBOX_TEST_DOMAIN, OPENSANDBOX_TEST_API_KEY,
