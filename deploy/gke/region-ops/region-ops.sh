@@ -20,7 +20,7 @@
 # (one-platform deploy/cluster-ops/cluster-ops.sh): it creates, resizes and
 # deletes them. install-opensandbox ends with what prepare-jobs does
 # (install-region.sh runs prepare-jobs.sh), so a cluster it installs can run
-# sandbox Git jobs; prepare-jobs brings an existing installation to that
+# Harbor jobs; prepare-jobs brings an existing installation to that
 # point, or copies changed Secrets to it.
 #
 # Every action can run again after a failure: what already exists is kept.
@@ -84,7 +84,7 @@ EOF
 }
 
 # install_opensandbox installs OpenSandbox on a cluster cluster-ops built for
-# it (install-region.sh), ready to run sandbox Git jobs.
+# it (install-region.sh), ready to run Harbor jobs.
 install_opensandbox() {
   (($# == 2)) || reject "install-opensandbox takes project location cluster"
   local location=$1 cluster=$2
@@ -119,7 +119,7 @@ prepare_jobs() {
   env=$(write_env "$region" "$location" "$cluster")
   step "copy images to $region"
   "$DEPLOY/sync-images.sh" "$env"
-  step "prepare $cluster for sandbox Git jobs"
+  step "prepare $cluster for Harbor jobs"
   "$DEPLOY/prepare-jobs.sh" "$env"
 }
 
