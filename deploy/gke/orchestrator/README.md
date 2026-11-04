@@ -28,7 +28,7 @@ Secret values only reach the orchestrator's environment and the command's enviro
 | `OP_GITHUB_TOKEN` | Secret `github-read-token`, key `value` |
 | `OP_SECRET_<NAME>` | for each entry `<NAME>: <secret>` of the spec's `secrets`, Secret `<secret>`, key `value`; the command sees it as `<NAME>`. One Platform accepts only Secrets named `task-…`, so a job cannot hand the orchestrator's own Secrets to its tasks |
 
-The Pod runs as KSA `sandbox-orchestrator` in `opensandbox-jobs`, which Workload Identity maps to a principal with `roles/storage.objectAdmin` on the artifacts bucket (`bootstrap-region.sh`). Sandboxes upload with their own KSA, `opensandbox/default`.
+The Pod runs as KSA `sandbox-orchestrator` in `opensandbox-jobs`, which Workload Identity maps to a principal with `roles/storage.objectAdmin` on the artifacts bucket (`prepare-jobs.sh`). Sandboxes upload with their own KSA, `opensandbox/default`.
 
 ## Task images
 

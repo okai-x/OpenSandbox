@@ -2,7 +2,7 @@
 # Ready sandbox nodes and their allocatable resources, and the sandbox pods
 # (by the one-platform.io/job label) that use them. It also runs sandbox Git
 # jobs: an orchestrator Job and its ConfigMap in namespace opensandbox-jobs
-# (created by bootstrap-region.sh), and after the job the deletion of its
+# (created by prepare-jobs.sh), and after the job the deletion of its
 # leftover BatchSandboxes by the same label. The server reaches the
 # cluster through its DNS endpoint as the service account
 # one-platform-sandbox@pranalab-infra, whose token it mints with
