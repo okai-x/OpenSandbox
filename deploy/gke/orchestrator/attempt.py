@@ -3,31 +3,66 @@
 The command runs detached and is polled, so a multi-hour task does not depend
 on one long-lived stream. Logs and /tmp/op/output are uploaded from inside the
 sandbox with sandbox_gcs_upload.py (the sandbox KSA can write the artifacts
-bucket); the orchestrator itself only reads back result.json.
+bucket); the orchestrator itself reads back result.json and, when it declares
+output files, lists the uploaded output to check them.
 """
 
 import json
+import re
 import shlex
 import threading
 import time
 from dataclasses import dataclass
 
-from records import validate_result, verdict
+from records import MAX_FILES, validate_outputs, validate_result, verdict
 
-MAX_RESULT = 64 << 10
+MAX_RESULT = 1 << 20
+SHA256 = re.compile(r"[0-9a-f]{64}")
 # How much of stderr's end a missing or invalid result's detail quotes; the
 # detail itself is cut at 500 characters by validate_result's contract.
 STDERR_TAIL = 300
 
 # Uploads the attempt's logs and output, then prints result.json (if any) as
-# the last stdout line. Runs with the image's python3. Each upload prints a
-# line, which keeps the command's output stream from hitting the SDK's read
-# timeout while a large output directory uploads.
+# the last stdout line, with the size and sha256 of each file it declares
+# ("declared"). Runs with the image's python3. Each upload prints a line, which
+# keeps the command's output stream from hitting the SDK's read timeout while a
+# large output directory uploads.
 COLLECT = f"""\
-import json, os, subprocess, sys
-dest = sys.argv[1]
+import hashlib, json, os, stat, subprocess, sys
+dest, output = sys.argv[1], "/tmp/op/output"
 def up(path, name):
     subprocess.run([sys.executable, "/tmp/op/upload.py", path, dest + "/" + name], check=True)
+def describe(path):
+    # Size and sha256 in one read; a symlink is never followed.
+    full = os.path.join(output, path)
+    if path.startswith("/") or ".." in path.split("/"):
+        return {{"error": "is outside the output directory"}}
+    try:
+        if os.path.realpath(full) != os.path.join(os.path.realpath(output), path):
+            return {{"error": "is a symlink or under one"}}
+        if not stat.S_ISREG(os.lstat(full).st_mode):
+            return {{"error": "is not a regular file"}}
+        digest, size = hashlib.sha256(), 0
+        with open(full, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                digest.update(block)
+                size += len(block)
+        return {{"size": size, "sha256": digest.hexdigest()}}
+    except FileNotFoundError:
+        return {{"error": "does not exist"}}
+    except (OSError, ValueError) as e:
+        return {{"error": type(e).__name__ + ": " + str(e)[:200]}}
+def declared(text):
+    # The orchestrator validates result.json; here a bad one only means no report.
+    try:
+        files = json.loads(text).get("files")
+    except (ValueError, RecursionError, AttributeError):
+        return {{}}
+    if not isinstance(files, list) or len(files) > {MAX_FILES}:
+        return {{}}
+    entries = [f for f in files if isinstance(f, dict)]
+    paths = {{f["path"] for f in entries if isinstance(f.get("path"), str)}}
+    return {{p: describe(p) for p in sorted(paths)}}
 for log in ("stdout.log", "stderr.log"):
     up("/tmp/op/logs/" + log, log)
 for root, _, files in os.walk("/tmp/op/output"):
@@ -35,7 +70,8 @@ for root, _, files in os.walk("/tmp/op/output"):
         path = os.path.join(root, f)
         if os.path.isfile(path):
             up(path, "output/" + os.path.relpath(path, "/tmp/op/output"))
-res, out = "/tmp/op/output/result.json", {{"size": -1, "text": None, "stderrTail": ""}}
+res = "/tmp/op/output/result.json"
+out = {{"size": -1, "text": None, "stderrTail": "", "declared": {{}}}}
 with open("/tmp/op/logs/stderr.log", "rb") as f:
     f.seek(max(os.path.getsize("/tmp/op/logs/stderr.log") - 4096, 0))
     lines = [l for l in f.read().decode("utf-8", "replace").splitlines() if l.strip()]
@@ -45,6 +81,7 @@ if os.path.isfile(res):
     if out["size"] <= {MAX_RESULT}:
         with open(res, encoding="utf-8", errors="replace") as f:
             out["text"] = f.read()
+        out["declared"] = declared(out["text"])
 print(json.dumps(out))
 """
 
@@ -68,6 +105,7 @@ class Context:
     timeout_s: float
     source: bytes
     uploader: str
+    gcs: object  # lists the uploaded output; gcs.GCS
     poll_s: float = 10
     lost_after: int = 6  # consecutive failed status polls
 
@@ -81,7 +119,8 @@ def run(
     prefix: str,
     stop: threading.Event,
 ) -> dict:
-    """Return {"exitCode", "result", "usage"}; raise SandboxLost or Stopped."""
+    """Return {"exitCode", "result", "usage"} and, when the result is the task's
+    own, its "record" and verified "files"; raise SandboxLost or Stopped."""
     try:
         prepare(sandboxes, sb, ctx, item)
         execution = sandboxes.start(sb, command_line(ctx.command), envs)
@@ -107,9 +146,13 @@ def run(
         # Not retried: the command already ran, and running it again costs as much.
         out.setdefault("result", verdict("infra", f"upload output: exit {code}"))
         return out
-    result, out["usage"] = judge(last_line(stdout), exit_code)
-    out.setdefault("result", result)
-    return out
+    report = last_line(stdout)
+    judged = judge(report, exit_code)
+    if timed_out:
+        out["usage"] = judged["usage"]
+        return out
+    verified = verify(ctx.gcs, prefix, judged, report.get("declared"))
+    return {"exitCode": exit_code, **verified}
 
 
 def prepare(sandboxes, sb, ctx: Context, item: dict) -> None:
@@ -162,18 +205,86 @@ def interrupt(sandboxes, sb, execution: str):
         return None
 
 
-def judge(out: dict, exit_code=None) -> tuple[dict, dict]:
-    """The task's result; when the task gave none, why, with its exit code
-    and the end of its stderr, so the cause shows without opening the logs."""
+def judge(out: dict, exit_code=None) -> dict:
+    """The task's {"result", "usage", "record", "files"}; when the task gave none,
+    why, with its exit code and the end of its stderr, so the cause shows
+    without opening the logs."""
     if out.get("size", -1) < 0:
-        return verdict("task_error", why("result.json is missing", out, exit_code)), {}
+        return task_error(why("result.json is missing", out, exit_code))
     if out.get("text") is None:
         reason = f"result.json is larger than {MAX_RESULT} bytes"
-        return verdict("task_error", why(reason, out, exit_code)), {}
+        return task_error(why(reason, out, exit_code))
     try:
-        return validate_result(json.loads(out["text"]))
-    except (TypeError, ValueError) as e:  # json.JSONDecodeError is a ValueError
-        return verdict("task_error", why(f"result.json is invalid: {e}", out, exit_code)), {}
+        doc = json.loads(out["text"])
+        result, usage = validate_result(doc)
+        record, files = validate_outputs(doc)
+    # json.JSONDecodeError is a ValueError; deep nesting raises RecursionError.
+    except (TypeError, ValueError, RecursionError) as e:
+        return task_error(why(f"result.json is invalid: {e}", out, exit_code))
+    return {"result": result, "usage": usage, "record": record, "files": files}
+
+
+def task_error(detail: str, usage: dict | None = None) -> dict:
+    result = verdict("task_error", detail)
+    return {"result": result, "usage": usage or {}, "record": {}, "files": []}
+
+
+def verify(gcs, prefix: str, judged: dict, declared) -> dict:
+    """judged, with each declared file checked against the sandbox's report and
+    the uploaded object, and its location added. A file that does not check
+    out makes the attempt a task_error; its usage still counts."""
+    if not judged["files"]:
+        return judged
+    try:
+        listed = {o["name"]: o for o in gcs.list(f"{prefix}/output/")}
+    except Exception as e:  # noqa: BLE001 - not retried: the command already ran
+        result = verdict("infra", f"list output: {short(e)}")
+        return {**judged, "result": result, "record": {}, "files": []}
+    declared = declared if isinstance(declared, dict) else {}
+    try:
+        files = [
+            located(
+                gcs.bucket,
+                f,
+                declared.get(f["path"]),
+                listed.get(f"{prefix}/output/{f['path']}"),
+            )
+            for f in judged["files"]
+        ]
+    except ValueError as e:
+        return task_error(str(e), judged["usage"])
+    return {**judged, "files": files}
+
+
+def located(bucket: str, f: dict, report, obj) -> dict:
+    """The task.json entry of declared file f; raise ValueError when the
+    sandbox's report or the uploaded object does not match it."""
+    problem = file_problem(report, obj)
+    if problem:
+        raise ValueError(f"declared file {f['path']}: {problem}")
+    return {
+        **f,
+        "size": report["size"],
+        "sha256": report["sha256"],
+        "uri": f"gs://{bucket}/{obj['name']}",
+        "generation": obj["generation"],
+        "md5": obj.get("md5Hash"),  # a composite object (a large upload) has none
+    }
+
+
+def file_problem(report, obj) -> str:
+    if not isinstance(report, dict):
+        return "the sandbox did not report it"
+    if "error" in report:
+        return str(report["error"])[:200]
+    size, sha256 = report.get("size"), report.get("sha256")
+    if not isinstance(size, int) or not SHA256.fullmatch(str(sha256)):
+        return "the sandbox's report is malformed"
+    if obj is None:
+        return "was not uploaded"
+    if int(obj["size"]) != size:
+        return f"the sandbox read {size} bytes but the bucket holds {obj['size']}"
+    return ""
 
 
 def why(reason: str, out: dict, exit_code) -> str:

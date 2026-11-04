@@ -4,7 +4,9 @@ One Platform runs it as Job opjob-<job> in namespace opensandbox-jobs with the
 job's ConfigMap mounted at $OP_JOB_DIR (spec.json, inputs.jsonl). It runs one
 sandbox per (item index, sample) task, at most `concurrency` at a time, and
 keeps the job's records in gs://$OP_ARTIFACTS_BUCKET/jobs/<job>/. The contract
-is docs/sandbox-git-jobs-design.md in One Platform, sections 3-7.
+is docs/sandbox-git-jobs-design.md in One Platform, sections 3-7; version 2 of
+result.json and task.json (a task's record, output files and checks) is
+section 4 of its docs/data-lineage-design.md.
 
 Exit 0 when every task ended or the budget stopped new tasks; otherwise a
 one-line reason goes to /dev/termination-log and the exit code is non-zero.
@@ -109,6 +111,7 @@ class Orchestrator:
             timeout_s=self.spec["sandbox"]["timeoutMinutes"] * 60,
             source=archive,
             uploader=uploader,
+            gcs=self.gcs,
             poll_s=self.settings.poll_s,
         )
 
@@ -180,6 +183,7 @@ class Orchestrator:
         prefix = f"jobs/{self.job}/tasks/{task.index}/{task.sample}/attempt-{n}"
         with self.lock:
             task.status, task.attempt, task.result, task.usage = "running", n, {}, {}
+            task.record, task.files = {}, []
             task.started, task.finished = time.time(), 0.0
         run = {"startedAt": now()}
         try:
@@ -226,6 +230,7 @@ class Orchestrator:
                 out["result"],
                 out.get("usage", {}),
             )
+            task.record, task.files = out.get("record", {}), out.get("files", [])
             task.finished = time.time()
             self.spent += cost(task.usage)
             doc = self.task_doc(task, run)
