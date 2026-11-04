@@ -22,7 +22,7 @@ from unittest import mock
 import attempt
 import gcs
 import source
-from orchestrator import Orchestrator, Settings
+from orchestrator import Orchestrator, Settings, sandbox_resources
 from records import (
     MAX_RECORD,
     Task,
@@ -148,12 +148,13 @@ class FakeSandboxes:
         self.max_live = 0
         self.delete_all_calls = 0
 
-    def create(self, image, cpu, memory_gib, lifetime_s):
+    def create(self, image, limits, requests, lifetime_s):
         with self.lock:
             if self.fail_creates:
                 self.fail_creates -= 1
                 raise RuntimeError("no capacity")
             sb = FakeSandbox(len(self.created))
+            sb.limits, sb.requests = limits, requests
             self.created.append(sb)
             self.live += 1
             self.max_live = max(self.max_live, self.live)
@@ -445,6 +446,32 @@ class TasksTest(unittest.TestCase):
         )
 
 
+class SandboxResourcesTest(unittest.TestCase):
+    def test_a_spec_without_requests_requests_its_limits(self):
+        limits, requests = sandbox_resources(
+            {"cpu": 8, "memoryGiB": 12, "timeoutMinutes": 180}
+        )
+        self.assertEqual(limits, {"cpu": "8000m", "memory": "12288Mi"})
+        self.assertEqual(requests, limits)
+
+    def test_zero_requests_are_the_limits(self):
+        size = {"cpuRequest": 0, "cpu": 0.5, "memoryRequestGiB": 0, "memoryGiB": 1.5}
+        limits, requests = sandbox_resources(size)
+        self.assertEqual(limits, {"cpu": "500m", "memory": "1536Mi"})
+        self.assertEqual(requests, limits)
+
+    def test_fractional_requests(self):
+        size = {
+            "cpuRequest": 0.01,
+            "cpu": 32,
+            "memoryRequestGiB": 0.1,
+            "memoryGiB": 128,
+        }
+        limits, requests = sandbox_resources(size)
+        self.assertEqual(limits, {"cpu": "32000m", "memory": "131072Mi"})
+        self.assertEqual(requests, {"cpu": "10m", "memory": "102Mi"})
+
+
 class SourceTest(unittest.TestCase):
     def names(self, archive):
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
@@ -626,6 +653,20 @@ class RunTest(Harness):
         self.assertEqual(len(judged["result"]["detail"]), 500)
         judged = attempt.judge({"size": -1, "text": None, "stderrTail": ""}, None)
         self.assertEqual(judged["result"]["detail"], "result.json is missing")
+
+    def test_sandboxes_get_requests_and_limits(self):
+        sandbox = {
+            "cpuRequest": 2.95,
+            "cpu": 8,
+            "memoryRequestGiB": 5.4,
+            "memoryGiB": 24,
+            "timeoutMinutes": 1,
+        }
+        orch = self.orchestrator([{"item_name": "a"}], sandbox=sandbox)
+        self.assertEqual(orch.run(), 0)
+        sb = self.sandboxes.created[0]
+        self.assertEqual(sb.limits, {"cpu": "8000m", "memory": "24576Mi"})
+        self.assertEqual(sb.requests, {"cpu": "2950m", "memory": "5530Mi"})
 
     def test_concurrency_limits_live_sandboxes(self):
         items = [{"item_name": f"i{n}", "behavior": {"polls": 4}} for n in range(10)]
