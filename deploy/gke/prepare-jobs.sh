@@ -7,8 +7,9 @@
 #
 # One Platform lists a region for jobs only once this has succeeded there. It
 # sets up namespace opensandbox-jobs and the KSAs of the orchestrator and the
-# Harbor runner, One Platform's RBAC (one-platform-rbac.yaml), their write and
-# One Platform's read access to the artifacts bucket, One Platform's read access
+# Harbor runner, the runner's read of its limits ConfigMap, One Platform's
+# RBAC (one-platform-rbac.yaml), their write and One Platform's read access to
+# the artifacts bucket, One Platform's read access
 # to the region's image copy, and the Secrets orchestrators read; then it
 # checks all of them and that the image copy holds the orchestrator. Copy the
 # images first (sync-images.sh). The cluster's credentials must be in the
@@ -75,7 +76,9 @@ copied_secrets() {
 
 log "namespace $JOBS_NS and KSAs $ORCHESTRATOR_KSA, $HARBOR_KSA"
 "${KC[@]}" create namespace "$JOBS_NS" --dry-run=client -o yaml | "${KC[@]}" apply -f - >/dev/null
-# Neither calls the Kubernetes API: the Harbor runner reaches its sandboxes through OpenSandbox.
+# Tokens are not mounted by default. The orchestrator never calls the Kubernetes
+# API; the Harbor runner reaches its sandboxes through OpenSandbox and calls the
+# API only to read its job's limits ConfigMap (its pod opts in to the token).
 for ksa in "$ORCHESTRATOR_KSA" "$HARBOR_KSA"; do
   "${KC[@]}" apply -f - >/dev/null <<EOF
 apiVersion: v1
@@ -86,6 +89,35 @@ metadata:
 automountServiceAccountToken: false
 EOF
 done
+# A mounted ConfigMap changes only on kubelet's sync, about a minute later; the
+# API has a paused or resized job's limits within the runner's 5 s poll. The
+# Role covers every job's ConfigMaps (names are per job): rendered configs and
+# limits. Credentials reach jobs only as Secrets, which it does not cover.
+"${KC[@]}" apply -f - >/dev/null <<EOF_HARBOR_RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: $HARBOR_KSA
+  namespace: $JOBS_NS
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: $HARBOR_KSA
+  namespace: $JOBS_NS
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: $HARBOR_KSA
+subjects:
+  - kind: ServiceAccount
+    name: $HARBOR_KSA
+    namespace: $JOBS_NS
+EOF_HARBOR_RBAC
 echo "applied"
 
 log "One Platform's access (one-platform-rbac.yaml)"
@@ -138,6 +170,7 @@ fi
 
 log "check"
 "${KC[@]}" -n "$JOBS_NS" get serviceaccount "$ORCHESTRATOR_KSA" "$HARBOR_KSA" >/dev/null
+"${KC[@]}" -n "$JOBS_NS" get role,rolebinding "$HARBOR_KSA" >/dev/null
 "${KC[@]}" get -f "$ROOT/deploy/gke/one-platform-rbac.yaml" >/dev/null
 "${KC[@]}" -n "$JOBS_NS" get secret opensandbox-api-key github-read-token >/dev/null
 # A failed list stops here with gcloud's own error; an empty one means the copy lacks the image.
