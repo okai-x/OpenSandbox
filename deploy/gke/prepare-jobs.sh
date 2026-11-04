@@ -7,12 +7,10 @@
 # One Platform lists a region for jobs only once this has succeeded there. It
 # sets up namespace opensandbox-jobs and the Harbor runner's KSA, its read of
 # its limits ConfigMap, One Platform's RBAC (one-platform-rbac.yaml), the
-# runner's write and One Platform's read access to the artifacts bucket, One
-# Platform's read access to the region's image copy, and the Secrets runners
-# read; then it checks all of them and that the image copy holds the runner.
-# It also removes what sandbox Git jobs left: their orchestrator's KSA and its
-# bucket access. Copy the images first (sync-images.sh). The cluster's
-# credentials must be in the kubeconfig. Re-running it is safe.
+# runner's write and One Platform's read access to the artifacts bucket, and
+# the Secrets runners read; then it checks all of them and that the region's
+# image copy holds the runner. Copy the images first (sync-images.sh). The
+# cluster's credentials must be in the kubeconfig. Re-running it is safe.
 #
 # opensandbox-api-key is the region's own server key. github-read-token and
 # the task- Secrets are kept in asia-southeast1 and copied from there: change
@@ -30,8 +28,6 @@ CTX="gke_${PROJECT}_${LOCATION}_${CLUSTER}"
 SYS_NS=opensandbox-system
 JOBS_NS=opensandbox-jobs
 HARBOR_KSA=harbor-runner
-# The KSA of sandbox Git jobs' orchestrator, which One Platform no longer runs.
-RETIRED_KSA=sandbox-orchestrator
 # One Platform's account and the Secrets every other region copies are in the
 # primary project, whatever the cluster's PROJECT.
 PRIMARY_PROJECT=pranalab-infra
@@ -41,10 +37,7 @@ SOURCE_LOCATION=asia-southeast1-b
 SOURCE_CLUSTER=opensandbox
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
 KSA_PRINCIPAL="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT.svc.id.goog/subject/ns/$JOBS_NS/sa"
-RETIRED_PRINCIPAL="$KSA_PRINCIPAL/$RETIRED_KSA"
 HARBOR_PRINCIPAL="$KSA_PRINCIPAL/$HARBOR_KSA"
-REPO_LOCATION=${REGISTRY%%-docker.pkg.dev/*}
-G=(--project "$PROJECT")
 KC=(kubectl --context "$CTX")
 
 log() { printf '\n== %s\n' "$*"; }
@@ -87,7 +80,6 @@ metadata:
   namespace: $JOBS_NS
 automountServiceAccountToken: false
 EOF
-"${KC[@]}" -n "$JOBS_NS" delete serviceaccount "$RETIRED_KSA" --ignore-not-found >/dev/null
 # A mounted ConfigMap changes only on kubelet's sync, about a minute later; the
 # API has a paused or resized job's limits within the runner's 5 s poll. The
 # Role covers every job's ConfigMaps (names are per job): rendered configs and
@@ -124,11 +116,6 @@ log "One Platform's access (one-platform-rbac.yaml)"
 echo "applied"
 
 log "artifacts bucket gs://$ARTIFACTS_BUCKET"
-# Fails only when the binding is already gone, which is the state we want.
-if gcloud storage buckets remove-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
-  --member "$RETIRED_PRINCIPAL" --role roles/storage.objectAdmin >/dev/null 2>&1; then
-  echo "objectAdmin of $JOBS_NS/$RETIRED_KSA removed"
-fi
 # The Harbor runner writes its job's results and mints the upload sessions its sandboxes use.
 gcloud storage buckets add-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
   --member "$HARBOR_PRINCIPAL" --role roles/storage.objectAdmin >/dev/null
@@ -136,11 +123,6 @@ echo "objectAdmin granted to $JOBS_NS/$HARBOR_KSA"
 gcloud storage buckets add-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
   --member "serviceAccount:$PLATFORM_SA" --role roles/storage.objectViewer >/dev/null
 echo "objectViewer granted to $PLATFORM_SA"
-
-log "image copy $REGISTRY"
-gcloud artifacts repositories add-iam-policy-binding opensandbox --location "$REPO_LOCATION" "${G[@]}" \
-  --member "serviceAccount:$PLATFORM_SA" --role roles/artifactregistry.reader >/dev/null
-echo "reader granted to $PLATFORM_SA"
 
 log "Secrets of $JOBS_NS"
 "${KC[@]}" -n "$SYS_NS" get secret opensandbox-api-key -o json | as_secret opensandbox-api-key api-key | put_secret

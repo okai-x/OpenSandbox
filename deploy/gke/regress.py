@@ -2,7 +2,7 @@
 
 Run through regress.sh (from a workstation, via port-forward and the server
 proxy) or as the in-cluster Job in regress-job.yaml (via the gateway, the same
-path the in-cluster orchestrator uses). Environment:
+path in-cluster Harbor runners use). Environment:
   OPENSANDBOX_TEST_DOMAIN   lifecycle server, e.g. 127.0.0.1:18080
   REGRESS_SERVER_PROXY      "true" to route sandbox traffic through the server
   OPENSANDBOX_TEST_API_KEY  server API key

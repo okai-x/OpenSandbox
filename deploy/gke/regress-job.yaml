@@ -1,5 +1,5 @@
 # In-cluster regression run: reaches sandboxes through the ingress gateway,
-# exactly like the in-cluster data-synthesis orchestrator. Started by
+# exactly like One Platform's in-cluster Harbor runners. Started by
 # `deploy/gke/regress.sh --in-cluster`; image from build-regress-image.sh.
 apiVersion: batch/v1
 kind: Job

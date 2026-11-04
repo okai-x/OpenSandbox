@@ -40,7 +40,7 @@ opensandbox-server:
         readOnly: true
     gateway:
       enabled: true
-      # Clients (the data-synthesis orchestrator) run in this cluster and reach
+      # Clients (One Platform's Harbor runners) run in this cluster and reach
       # sandboxes through the gateway Service. Out-of-cluster tools use the
       # server proxy (SDK use_server_proxy=True) instead.
       host: "opensandbox-ingress-gateway.opensandbox-system.svc.cluster.local:80"

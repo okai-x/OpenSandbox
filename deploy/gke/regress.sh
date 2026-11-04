@@ -8,7 +8,7 @@
 # The server announces the gateway's in-cluster address, so workstation runs
 # reach sandboxes through the server proxy (port-forward to the server only).
 # --in-cluster runs regress-job.yaml, which goes through the gateway like the
-# in-cluster orchestrator; build its image with build-regress-image.sh.
+# in-cluster Harbor runners; build its image with build-regress-image.sh.
 #
 # Env overrides: KUBE_CONTEXT, SERVER_PORT (18080), SANDBOX_IMAGE,
 # REGRESS_CONCURRENCY (2), REGRESS_VERBOSE, and for another region its

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run loadtest.py as an in-cluster Job (through the gateway, like the
-# orchestrator), stream its output and exit with its result.
+# Harbor runners), stream its output and exit with its result.
 #
 #   deploy/gke/loadtest.sh --concurrency 14 --total 28 --burn-seconds 120
 #
