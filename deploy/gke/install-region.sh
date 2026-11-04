@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
-# Build an OpenSandbox region from a parameter file in deploy/gke/regions/:
+# Install OpenSandbox on a cluster, from a parameter file in deploy/gke/regions/
+# (or one region-ops.sh writes):
 #
-#   deploy/gke/bootstrap-region.sh deploy/gke/regions/asia-south1.env
+#   deploy/gke/install-region.sh deploy/gke/regions/asia-south1.env
 #
-# Creates what is missing and leaves what exists: private GKE cluster (Workload
-# Identity, Managed Prometheus, DNS endpoint), one tainted sandbox node pool,
-# the region's artifacts bucket and its IAM binding, a region-local copy of the
-# images (sync-images.sh), then installs the Helm release, the metrics
-# collector and the sandbox template, and ends with prepare-jobs.sh: One
-# Platform's access (one-platform-rbac.yaml) and everything its sandbox Git
-# job orchestrators (orchestrator/) need. Re-running it is safe; it upgrades
-# the Helm release and re-applies the manifests.
+# The cluster must already exist. One Platform's cluster-ops Job creates it
+# (one-platform deploy/cluster-ops/cluster-ops.sh create-cluster opensandbox
+# <region> <machineType> <minNodes> <maxNodes>): a private cluster labeled
+# app=opensandbox (Workload Identity, Managed Prometheus, DNS endpoint) with
+# one sandbox node pool labeled and tainted opensandbox.io/pool=sandbox
+# (NoSchedule), which the sandbox template selects and tolerates.
+#
+# Creates what is missing and leaves what exists: the region's artifacts
+# bucket and its IAM binding, a region-local copy of the images
+# (sync-images.sh), then installs the Helm release, the metrics collector and
+# the sandbox template, and ends with prepare-jobs.sh: One Platform's access
+# (one-platform-rbac.yaml) and everything its sandbox Git job orchestrators
+# (orchestrator/) need. Re-running it is safe; it upgrades the Helm release
+# and re-applies the manifests.
 #
 # values-gke-private.yaml and observability.yaml name the asia-southeast1
 # repository; they are applied with it replaced by the region's REGISTRY.
@@ -34,46 +41,6 @@ SOURCE_REGISTRY=asia-southeast1-docker.pkg.dev/$PROJECT/opensandbox
 log() { printf '\n== %s\n' "$*"; }
 # Print a deploy/gke file with image references pointed at the region's registry.
 regional() { sed "s#$SOURCE_REGISTRY#$REGISTRY#g" "$ROOT/deploy/gke/$1"; }
-
-log "network: Private Google Access on subnet default/$REGION"
-# Nodes have no external IP and no NAT; Google APIs (Artifact Registry, GCS,
-# Monitoring) are reached through Private Google Access.
-gcloud compute networks subnets update default --region "$REGION" "${G[@]}" \
-  --enable-private-ip-google-access --quiet
-
-log "cluster $CLUSTER ($LOCATION)"
-if gcloud container clusters describe "$CLUSTER" --location "$LOCATION" "${G[@]}" >/dev/null 2>&1; then
-  echo "exists"
-else
-  # --num-nodes is per zone of --node-locations.
-  gcloud container clusters create "$CLUSTER" --location "$LOCATION" "${G[@]}" \
-    --node-locations "$SYSTEM_NODE_LOCATIONS" --num-nodes 1 \
-    --machine-type "$SYSTEM_MACHINE" --disk-size 100 \
-    --network default --subnetwork default --enable-ip-alias \
-    --enable-private-nodes --enable-master-authorized-networks \
-    --master-authorized-networks "$MASTER_AUTHORIZED_NETWORKS" \
-    --enable-dns-access --release-channel regular \
-    --workload-pool "$PROJECT.svc.id.goog" --enable-managed-prometheus \
-    --autoscaling-profile optimize-utilization \
-    --labels app=opensandbox --quiet
-fi
-
-log "sandbox node pool $SANDBOX_POOL ($SANDBOX_MACHINE)"
-if gcloud container node-pools describe "$SANDBOX_POOL" --cluster "$CLUSTER" --location "$LOCATION" "${G[@]}" >/dev/null 2>&1; then
-  echo "exists"
-else
-  # The taint keeps system pods off autoscaled sandbox nodes; the sandbox
-  # template (sandbox-template.yaml) selects the label and tolerates the taint.
-  # ANY lets the autoscaler use whichever zone has the machine type in stock.
-  gcloud container node-pools create "$SANDBOX_POOL" --cluster "$CLUSTER" --location "$LOCATION" "${G[@]}" \
-    --node-locations "$SANDBOX_NODE_LOCATIONS" --machine-type "$SANDBOX_MACHINE" \
-    --disk-type "$SANDBOX_DISK_TYPE" --disk-size "$SANDBOX_DISK_GB" \
-    --num-nodes 0 --enable-autoscaling --location-policy ANY \
-    --total-min-nodes "$SANDBOX_MIN_NODES" --total-max-nodes "$SANDBOX_MAX_NODES" \
-    --enable-image-streaming --workload-metadata GKE_METADATA \
-    --node-labels opensandbox.io/pool=sandbox \
-    --node-taints opensandbox.io/pool=sandbox:NoSchedule --quiet
-fi
 
 log "artifacts bucket gs://$ARTIFACTS_BUCKET"
 if gcloud storage buckets describe "gs://$ARTIFACTS_BUCKET" "${G[@]}" >/dev/null 2>&1; then
