@@ -15,8 +15,7 @@
 # bucket and its IAM binding, a region-local copy of the images
 # (sync-images.sh), then installs the Helm release, the metrics collector and
 # the sandbox template, and ends with prepare-jobs.sh: One Platform's access
-# (one-platform-rbac.yaml) and everything its sandbox Git job orchestrators
-# (orchestrator/) need. Re-running it is safe; it upgrades the Helm release
+# (one-platform-rbac.yaml) and everything its Harbor job runners need. Re-running it is safe; it upgrades the Helm release
 # and re-applies the manifests.
 #
 # PROJECT is the cluster's project, which holds the bucket and the image copy.
@@ -90,7 +89,7 @@ regional values-gke-private.yaml \
       -n "$SYS_NS" -f - --wait --timeout 10m \
   | grep -E '^(STATUS|REVISION):'
 
-log "sandbox Git jobs"
+log "Harbor jobs"
 "$ROOT/deploy/gke/prepare-jobs.sh" "$1"
 
 log "done: KUBE_CONTEXT=$CTX REGISTRY=$REGISTRY REGRESS_ARTIFACT_BUCKET=$ARTIFACTS_BUCKET deploy/gke/regress.sh --in-cluster"

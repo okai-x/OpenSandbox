@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# Make an OpenSandbox region able to run One Platform's sandbox Git jobs and
-# Harbor jobs, from a parameter file in deploy/gke/regions/ (or one
-# region-ops.sh writes):
+# Make an OpenSandbox region able to run One Platform's Harbor jobs, from a
+# parameter file in deploy/gke/regions/ (or one region-ops.sh writes):
 #
 #   deploy/gke/prepare-jobs.sh deploy/gke/regions/asia-south1.env
 #
 # One Platform lists a region for jobs only once this has succeeded there. It
-# sets up namespace opensandbox-jobs and the KSAs of the orchestrator and the
-# Harbor runner, the runner's read of its limits ConfigMap, One Platform's
-# RBAC (one-platform-rbac.yaml), their write and One Platform's read access to
-# the artifacts bucket, One Platform's read access
-# to the region's image copy, and the Secrets orchestrators read; then it
-# checks all of them and that the image copy holds the orchestrator. Copy the
-# images first (sync-images.sh). The cluster's credentials must be in the
-# kubeconfig. Re-running it is safe.
+# sets up namespace opensandbox-jobs and the Harbor runner's KSA, its read of
+# its limits ConfigMap, One Platform's RBAC (one-platform-rbac.yaml), the
+# runner's write and One Platform's read access to the artifacts bucket, One
+# Platform's read access to the region's image copy, and the Secrets runners
+# read; then it checks all of them and that the image copy holds the runner.
+# It also removes what sandbox Git jobs left: their orchestrator's KSA and its
+# bucket access. Copy the images first (sync-images.sh). The cluster's
+# credentials must be in the kubeconfig. Re-running it is safe.
 #
 # opensandbox-api-key is the region's own server key. github-read-token and
 # the task- Secrets are kept in asia-southeast1 and copied from there: change
@@ -30,8 +29,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CTX="gke_${PROJECT}_${LOCATION}_${CLUSTER}"
 SYS_NS=opensandbox-system
 JOBS_NS=opensandbox-jobs
-ORCHESTRATOR_KSA=sandbox-orchestrator
 HARBOR_KSA=harbor-runner
+# The KSA of sandbox Git jobs' orchestrator, which One Platform no longer runs.
+RETIRED_KSA=sandbox-orchestrator
 # One Platform's account and the Secrets every other region copies are in the
 # primary project, whatever the cluster's PROJECT.
 PRIMARY_PROJECT=pranalab-infra
@@ -41,7 +41,7 @@ SOURCE_LOCATION=asia-southeast1-b
 SOURCE_CLUSTER=opensandbox
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
 KSA_PRINCIPAL="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT.svc.id.goog/subject/ns/$JOBS_NS/sa"
-ORCHESTRATOR_PRINCIPAL="$KSA_PRINCIPAL/$ORCHESTRATOR_KSA"
+RETIRED_PRINCIPAL="$KSA_PRINCIPAL/$RETIRED_KSA"
 HARBOR_PRINCIPAL="$KSA_PRINCIPAL/$HARBOR_KSA"
 REPO_LOCATION=${REGISTRY%%-docker.pkg.dev/*}
 G=(--project "$PROJECT")
@@ -74,21 +74,20 @@ copied_secrets() {
   "$@" -n "$JOBS_NS" get secrets -o name | sed -n -E 's#^secret/(github-read-token|task-[a-z0-9.-]+)$#\1#p'
 }
 
-log "namespace $JOBS_NS and KSAs $ORCHESTRATOR_KSA, $HARBOR_KSA"
+log "namespace $JOBS_NS and KSA $HARBOR_KSA"
 "${KC[@]}" create namespace "$JOBS_NS" --dry-run=client -o yaml | "${KC[@]}" apply -f - >/dev/null
-# Tokens are not mounted by default. The orchestrator never calls the Kubernetes
-# API; the Harbor runner reaches its sandboxes through OpenSandbox and calls the
-# API only to read its job's limits ConfigMap (its pod opts in to the token).
-for ksa in "$ORCHESTRATOR_KSA" "$HARBOR_KSA"; do
-  "${KC[@]}" apply -f - >/dev/null <<EOF
+# The token is not mounted by default. The Harbor runner reaches its sandboxes
+# through OpenSandbox and calls the API only to read its job's limits
+# ConfigMap (its pod opts in to the token).
+"${KC[@]}" apply -f - >/dev/null <<EOF
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: $ksa
+  name: $HARBOR_KSA
   namespace: $JOBS_NS
 automountServiceAccountToken: false
 EOF
-done
+"${KC[@]}" -n "$JOBS_NS" delete serviceaccount "$RETIRED_KSA" --ignore-not-found >/dev/null
 # A mounted ConfigMap changes only on kubelet's sync, about a minute later; the
 # API has a paused or resized job's limits within the runner's 5 s poll. The
 # Role covers every job's ConfigMaps (names are per job): rendered configs and
@@ -125,9 +124,11 @@ log "One Platform's access (one-platform-rbac.yaml)"
 echo "applied"
 
 log "artifacts bucket gs://$ARTIFACTS_BUCKET"
-gcloud storage buckets add-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
-  --member "$ORCHESTRATOR_PRINCIPAL" --role roles/storage.objectAdmin >/dev/null
-echo "objectAdmin granted to $JOBS_NS/$ORCHESTRATOR_KSA"
+# Fails only when the binding is already gone, which is the state we want.
+if gcloud storage buckets remove-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
+  --member "$RETIRED_PRINCIPAL" --role roles/storage.objectAdmin >/dev/null 2>&1; then
+  echo "objectAdmin of $JOBS_NS/$RETIRED_KSA removed"
+fi
 # The Harbor runner writes its job's results and mints the upload sessions its sandboxes use.
 gcloud storage buckets add-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
   --member "$HARBOR_PRINCIPAL" --role roles/storage.objectAdmin >/dev/null
@@ -169,14 +170,11 @@ else
 fi
 
 log "check"
-"${KC[@]}" -n "$JOBS_NS" get serviceaccount "$ORCHESTRATOR_KSA" "$HARBOR_KSA" >/dev/null
+"${KC[@]}" -n "$JOBS_NS" get serviceaccount "$HARBOR_KSA" >/dev/null
 "${KC[@]}" -n "$JOBS_NS" get role,rolebinding "$HARBOR_KSA" >/dev/null
 "${KC[@]}" get -f "$ROOT/deploy/gke/one-platform-rbac.yaml" >/dev/null
 "${KC[@]}" -n "$JOBS_NS" get secret opensandbox-api-key github-read-token >/dev/null
 # A failed list stops here with gcloud's own error; an empty one means the copy lacks the image.
-orchestrator=$(gcloud artifacts docker images list "$REGISTRY/sandbox-orchestrator" --limit 1 --format='value(version)')
-[[ -n $orchestrator ]] || { echo "$REGISTRY has no sandbox-orchestrator image: run sync-images.sh first" >&2; exit 1; }
-# Harbor jobs need the runner image as well; sandbox Git jobs do not, so a missing one only warns.
 harbor_runner=$(gcloud artifacts docker images list "$REGISTRY/harbor-runner" --limit 1 --format='value(version)')
-[[ -n $harbor_runner ]] || echo "warning: $REGISTRY has no harbor-runner image yet: Harbor jobs cannot start here" >&2
-echo "$CLUSTER can run sandbox Git jobs"
+[[ -n $harbor_runner ]] || { echo "$REGISTRY has no harbor-runner image: run sync-images.sh first" >&2; exit 1; }
+echo "$CLUSTER can run Harbor jobs"

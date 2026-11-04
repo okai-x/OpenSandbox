@@ -1,11 +1,10 @@
 # Access for One Platform, which shows each region's sandbox capacity:
 # Ready sandbox nodes and their allocatable resources, and the sandbox pods
-# (by the one-platform.io/job label) that use them. It also runs sandbox Git
-# jobs: an orchestrator Job and its ConfigMap in namespace opensandbox-jobs
-# (created by prepare-jobs.sh), and Harbor jobs: a runner Job, its ConfigMap
-# and a limits ConfigMap it updates while the job runs; and after a job the
-# deletion of its
-# leftover BatchSandboxes by the same label. The server reaches the
+# (by the one-platform.io/job label) that use them. It also runs Harbor jobs in
+# namespace opensandbox-jobs (created by prepare-jobs.sh): a runner Job, its
+# ConfigMap and a limits ConfigMap it updates while the job runs, the runner's
+# pods and logs; and after a job the deletion of its leftover BatchSandboxes
+# by the same label. The server reaches the
 # cluster through its DNS endpoint as the service account
 # one-platform-sandbox@pranalab-infra, whose token it mints with
 # iamcredentials (roles/iam.serviceAccountTokenCreator for the server's
