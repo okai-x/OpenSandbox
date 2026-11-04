@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Make an OpenSandbox region able to run One Platform's sandbox Git jobs, from
-# a parameter file in deploy/gke/regions/ (or one region-ops.sh writes):
+# Make an OpenSandbox region able to run One Platform's sandbox Git jobs and
+# Harbor jobs, from a parameter file in deploy/gke/regions/ (or one
+# region-ops.sh writes):
 #
 #   deploy/gke/prepare-jobs.sh deploy/gke/regions/asia-south1.env
 #
 # One Platform lists a region for jobs only once this has succeeded there. It
-# sets up namespace opensandbox-jobs and the orchestrator's KSA, One
-# Platform's RBAC (one-platform-rbac.yaml), the orchestrator's write and One
-# Platform's read access to the artifacts bucket, One Platform's read access
+# sets up namespace opensandbox-jobs and the KSAs of the orchestrator and the
+# Harbor runner, One Platform's RBAC (one-platform-rbac.yaml), their write and
+# One Platform's read access to the artifacts bucket, One Platform's read access
 # to the region's image copy, and the Secrets orchestrators read; then it
 # checks all of them and that the image copy holds the orchestrator. Copy the
 # images first (sync-images.sh). The cluster's credentials must be in the
@@ -29,6 +30,7 @@ CTX="gke_${PROJECT}_${LOCATION}_${CLUSTER}"
 SYS_NS=opensandbox-system
 JOBS_NS=opensandbox-jobs
 ORCHESTRATOR_KSA=sandbox-orchestrator
+HARBOR_KSA=harbor-runner
 # One Platform's account and the Secrets every other region copies are in the
 # primary project, whatever the cluster's PROJECT.
 PRIMARY_PROJECT=pranalab-infra
@@ -37,7 +39,9 @@ PLATFORM_SA=one-platform-sandbox@$PRIMARY_PROJECT.iam.gserviceaccount.com
 SOURCE_LOCATION=asia-southeast1-b
 SOURCE_CLUSTER=opensandbox
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
-ORCHESTRATOR_PRINCIPAL="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT.svc.id.goog/subject/ns/$JOBS_NS/sa/$ORCHESTRATOR_KSA"
+KSA_PRINCIPAL="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT.svc.id.goog/subject/ns/$JOBS_NS/sa"
+ORCHESTRATOR_PRINCIPAL="$KSA_PRINCIPAL/$ORCHESTRATOR_KSA"
+HARBOR_PRINCIPAL="$KSA_PRINCIPAL/$HARBOR_KSA"
 REPO_LOCATION=${REGISTRY%%-docker.pkg.dev/*}
 G=(--project "$PROJECT")
 KC=(kubectl --context "$CTX")
@@ -69,16 +73,19 @@ copied_secrets() {
   "$@" -n "$JOBS_NS" get secrets -o name | sed -n -E 's#^secret/(github-read-token|task-[a-z0-9.-]+)$#\1#p'
 }
 
-log "namespace $JOBS_NS and KSA $ORCHESTRATOR_KSA"
+log "namespace $JOBS_NS and KSAs $ORCHESTRATOR_KSA, $HARBOR_KSA"
 "${KC[@]}" create namespace "$JOBS_NS" --dry-run=client -o yaml | "${KC[@]}" apply -f - >/dev/null
-"${KC[@]}" apply -f - >/dev/null <<EOF
+# Neither calls the Kubernetes API: the Harbor runner reaches its sandboxes through OpenSandbox.
+for ksa in "$ORCHESTRATOR_KSA" "$HARBOR_KSA"; do
+  "${KC[@]}" apply -f - >/dev/null <<EOF
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: $ORCHESTRATOR_KSA
+  name: $ksa
   namespace: $JOBS_NS
 automountServiceAccountToken: false
 EOF
+done
 echo "applied"
 
 log "One Platform's access (one-platform-rbac.yaml)"
@@ -89,6 +96,10 @@ log "artifacts bucket gs://$ARTIFACTS_BUCKET"
 gcloud storage buckets add-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
   --member "$ORCHESTRATOR_PRINCIPAL" --role roles/storage.objectAdmin >/dev/null
 echo "objectAdmin granted to $JOBS_NS/$ORCHESTRATOR_KSA"
+# The Harbor runner writes its job's results and mints the upload sessions its sandboxes use.
+gcloud storage buckets add-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
+  --member "$HARBOR_PRINCIPAL" --role roles/storage.objectAdmin >/dev/null
+echo "objectAdmin granted to $JOBS_NS/$HARBOR_KSA"
 gcloud storage buckets add-iam-policy-binding "gs://$ARTIFACTS_BUCKET" \
   --member "serviceAccount:$PLATFORM_SA" --role roles/storage.objectViewer >/dev/null
 echo "objectViewer granted to $PLATFORM_SA"
@@ -126,10 +137,13 @@ else
 fi
 
 log "check"
-"${KC[@]}" -n "$JOBS_NS" get serviceaccount "$ORCHESTRATOR_KSA" >/dev/null
+"${KC[@]}" -n "$JOBS_NS" get serviceaccount "$ORCHESTRATOR_KSA" "$HARBOR_KSA" >/dev/null
 "${KC[@]}" get -f "$ROOT/deploy/gke/one-platform-rbac.yaml" >/dev/null
 "${KC[@]}" -n "$JOBS_NS" get secret opensandbox-api-key github-read-token >/dev/null
 # A failed list stops here with gcloud's own error; an empty one means the copy lacks the image.
 orchestrator=$(gcloud artifacts docker images list "$REGISTRY/sandbox-orchestrator" --limit 1 --format='value(version)')
 [[ -n $orchestrator ]] || { echo "$REGISTRY has no sandbox-orchestrator image: run sync-images.sh first" >&2; exit 1; }
+# Harbor jobs need the runner image as well; sandbox Git jobs do not, so a missing one only warns.
+harbor_runner=$(gcloud artifacts docker images list "$REGISTRY/harbor-runner" --limit 1 --format='value(version)')
+[[ -n $harbor_runner ]] || echo "warning: $REGISTRY has no harbor-runner image yet: Harbor jobs cannot start here" >&2
 echo "$CLUSTER can run sandbox Git jobs"
