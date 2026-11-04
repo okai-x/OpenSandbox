@@ -1243,3 +1243,17 @@ class GCSTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LastLineTest(unittest.TestCase):
+    def test_only_a_json_object_is_a_report(self):
+        for stdout, want in [
+            ('uploaded a\n{"size": 3}\n', {"size": 3}),
+            ("[1, 2]\n", {}),
+            ('"text"\n', {}),
+            ("not json\n", {}),
+            ("", {}),
+        ]:
+            self.assertEqual(attempt.last_line(stdout), want, stdout)
+        # A report that is not an object is a missing result, not a crash.
+        self.assertEqual(attempt.judge(attempt.last_line("[1]"))["result"]["class"], "task_error")

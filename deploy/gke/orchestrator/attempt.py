@@ -294,11 +294,13 @@ def why(reason: str, out: dict, exit_code) -> str:
 
 
 def last_line(stdout: str) -> dict:
+    """COLLECT's report: its last line as a JSON object, or {} when it is not one."""
     lines = stdout.strip().splitlines()
     try:
-        return json.loads(lines[-1]) if lines else {}
-    except ValueError:
+        report = json.loads(lines[-1]) if lines else {}
+    except (ValueError, RecursionError):
         return {}
+    return report if isinstance(report, dict) else {}
 
 
 def short(e: Exception) -> str:
