@@ -2,7 +2,9 @@
 # Ready sandbox nodes and their allocatable resources, and the sandbox pods
 # (by the one-platform.io/job label) that use them. It also runs sandbox Git
 # jobs: an orchestrator Job and its ConfigMap in namespace opensandbox-jobs
-# (created by prepare-jobs.sh), and after the job the deletion of its
+# (created by prepare-jobs.sh), and Harbor jobs: a runner Job, its ConfigMap
+# and a limits ConfigMap it updates while the job runs; and after a job the
+# deletion of its
 # leftover BatchSandboxes by the same label. The server reaches the
 # cluster through its DNS endpoint as the service account
 # one-platform-sandbox@pranalab-infra, whose token it mints with
@@ -69,7 +71,8 @@ rules:
     verbs: [create, get, delete]
   - apiGroups: [""]
     resources: [configmaps]
-    verbs: [create, get, delete]
+    # update: a Harbor job's limits change while it runs.
+    verbs: [create, get, update, delete]
   - apiGroups: [""]
     resources: [pods]
     verbs: [list]
