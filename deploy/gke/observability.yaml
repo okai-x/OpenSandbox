@@ -4,8 +4,9 @@
 #   controller-runtime /metrics ---------------------------------------------> Managed Prometheus
 #
 # Managed Prometheus (enabled on the cluster) scrapes both through PodMonitoring,
-# so the collector needs no GCP credentials. Grafana in one-platform reads the
-# result with PromQL against project pranalab-infra.
+# so the collector needs no GCP credentials. The result is queried with PromQL in
+# project pranalab-infra; One Platform's Grafana, which used to read it, was retired
+# on 2026-11-17.
 #
 #   kubectl apply -f deploy/gke/observability.yaml
 apiVersion: v1
